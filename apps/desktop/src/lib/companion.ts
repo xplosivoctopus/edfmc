@@ -210,6 +210,8 @@ export interface CompanionSnapshot {
   readonly activeFile: string | null;
   readonly lastError: string | null;
   readonly contexts: readonly ActiveContext[];
+  /** Scheduled jumps for the commander's own carriers, soonest first. */
+  readonly carrierJumps: readonly OverlayCarrierJump[];
   readonly contextRuleVersion: number;
   readonly contextRuleSource: string;
   readonly missions: MissionView;
@@ -549,6 +551,7 @@ export class Companion {
         activeFile: this.engine?.currentFile ?? null,
         lastError: this.lastError,
         contexts: this.projectedContexts(),
+        carrierJumps: this.projectCarrierJumps(),
         contextRuleVersion: this.resolver.version,
         contextRuleSource: this.resolver.source,
         missions: this.missionView(),
@@ -877,9 +880,26 @@ export class Companion {
    * countdown that has been "departing" since yesterday is noise rather than
    * information.
    */
-  get carrierJumps(): OverlayCarrierJump[] {
-    const now = Date.now();
+  /**
+   * Scheduled jumps for the commander's own carriers, soonest first.
+   *
+   * Private, and surfaced through `snapshot()` rather than as its own getter.
+   * That is not a style preference: `useSyncExternalStore` compares snapshots by
+   * identity, and this rebuilds its array every call. Exposed directly it was read
+   * as a state change on every render and React aborted with "Maximum update depth
+   * exceeded" -- on an empty list too, because even `[]` was a fresh reference, so
+   * the app failed to start at all. `snapshot()` is already cached and invalidated
+   * in `notify`, so going through it makes the identity correct by construction
+   * instead of relying on a second cache staying right.
+   *
+   * A record is dropped once its departure is more than an hour past. Completion
+   * normally arrives as a `CarrierLocation` at the destination, but a commander who
+   * was offline when the carrier jumped may not see one for a long time, and a
+   * countdown that has read "departing" since yesterday is noise.
+   */
+  private projectCarrierJumps(): OverlayCarrierJump[] {
     const STALE_AFTER_MS = 60 * 60 * 1000;
+    const now = Date.now();
 
     return Object.values(this.state.carrierJumps)
       .filter((j) => {
@@ -977,7 +997,7 @@ export class Companion {
           title: c.rule.title,
           subtitle: c.rule.subtitle ?? null,
         })),
-        carrierJumps: this.carrierJumps,
+        carrierJumps: this.projectCarrierJumps(),
         context: top
           ? {
               title: top.rule.title,

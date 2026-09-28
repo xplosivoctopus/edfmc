@@ -22,6 +22,7 @@ import {
   onEliteWindow,
   countdownTo,
   overlayApi,
+  type OverlayCarrierJump,
   type DisplayModeInfo,
   type EliteWindowInfo,
 } from './lib/overlay.js';
@@ -203,11 +204,7 @@ function stationDisplay(s: CommanderState): string {
  * produced one. A carrier you are visiting can leave without the journal ever
  * mentioning it, and inventing a countdown for that would be a guess.
  */
-function CarrierJumpCard() {
-  const jumps = useSyncExternalStore(
-    (cb) => companion.subscribe(cb),
-    () => companion.carrierJumps,
-  );
+function CarrierJumpCard({ jumps }: { jumps: readonly OverlayCarrierJump[] }) {
   const [now, setNow] = useState(() => Date.now());
 
   useEffect(() => {
@@ -297,7 +294,7 @@ function Dashboard({ snap }: { snap: Snap }) {
         </div>
       </section>
 
-      <CarrierJumpCard />
+      <CarrierJumpCard jumps={snap.carrierJumps} />
 
       <section className="card">
         <h2>Ship &amp; cargo</h2>
