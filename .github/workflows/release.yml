@@ -24,6 +24,11 @@ jobs:
 
     permissions:
       contents: write
+      # Build provenance. Not a substitute for code signing -- see
+      # docs/RELEASING.md -- but it does let someone check that a binary came
+      # from this repository and this workflow rather than from a lookalike.
+      id-token: write
+      attestations: write
 
     steps:
       - uses: actions/checkout@v4
@@ -53,6 +58,7 @@ jobs:
         run: npm run typecheck --workspaces --if-present
 
       - uses: tauri-apps/tauri-action@v0
+        id: tauri
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
@@ -65,7 +71,40 @@ jobs:
             Windows will likely warn that the publisher is unrecognised, because
             the installer is not code-signed. Choose **More info → Run anyway**.
 
+            `SHA256SUMS.txt` lets you check a download matches what this workflow
+            built, and each binary carries a signed build attestation you can
+            verify with `gh attestation verify <file> --repo ${{ github.repository }}`.
+            Neither is a code-signing certificate: they prove where a file came
+            from, not that Windows will trust it.
+
             Everything works offline. Contributing observations to EDFM is
             optional and off until you turn it on in Settings.
           releaseDraft: true
           prerelease: false
+
+      # SHA-256 for every published artifact.
+      #
+      # This lets a download be checked against what the workflow produced. It
+      # says nothing about who built it -- that is what the attestation below is
+      # for, and neither replaces Authenticode. See docs/RELEASING.md.
+      - name: Checksums
+        shell: pwsh
+        run: |
+          $paths = '${{ steps.tauri.outputs.artifactPaths }}' | ConvertFrom-Json
+          $lines = foreach ($p in $paths) {
+            $h = (Get-FileHash -Algorithm SHA256 -Path $p).Hash.ToLower()
+            "$h  $([System.IO.Path]::GetFileName($p))"
+          }
+          $lines | Set-Content -Encoding ascii SHA256SUMS.txt
+          Get-Content SHA256SUMS.txt
+
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: ${{ join(fromJSON(steps.tauri.outputs.artifactPaths), ',') }}
+
+      - name: Publish the checksums alongside the installers
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: pwsh
+        run: gh release upload ${{ github.ref_name }} SHA256SUMS.txt --clobber

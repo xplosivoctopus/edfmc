@@ -23,8 +23,10 @@ account.
 Two things to expect on first run:
 
 - **Windows will warn that the publisher is unrecognised.** The installer is not
-  code-signed. Choose **More info → Run anyway**. (Signing costs money annually;
-  it is on the list.)
+  code-signed. Choose **More info → Run anyway**. Every release publishes
+  SHA-256 checksums and a signed build attestation, so you can check a download
+  came from this repository — but neither removes the warning, and
+  [docs/RELEASING.md](docs/RELEASING.md) is straight about the difference.
 - **Nothing is sent anywhere.** Contributing observations to EDFM is optional and
   switched off until you turn it on in Settings.
 
@@ -167,6 +169,7 @@ scripts/             Journal profiling tooling
 | [API.md](docs/API.md) | Backend endpoints, identity hashing, notification rules |
 | [DISCORD.md](docs/DISCORD.md) | Forum reporting, duplicate policy, tag configuration |
 | [DEPLOYMENT.md](docs/DEPLOYMENT.md) | How the API and EDDN worker are hosted and updated |
+| [RELEASING.md](docs/RELEASING.md) | Release process, the code-signing gap, checksums and provenance |
 | [RESEARCH.md](docs/RESEARCH.md) | Research framework, session model, data-quality rules |
 | [LOGISTICS.md](docs/LOGISTICS.md) | Confidence engine, sourcing planner, construction projects |
 | [PLUGINS.md](docs/PLUGINS.md) | Installing and writing plugins, and why they are safe |
