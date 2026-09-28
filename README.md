@@ -58,8 +58,13 @@ server can tell two reporters apart, and your commander name travels only if you
 have asked to be credited. The server hashes both on arrival and stores only the
 hashes, so a database dump holds no commander identifiers — but it does see the
 values in transit, and this project will not claim otherwise. There is no
-telemetry and no analytics in any configuration, and with contribution off the
-app makes no network requests at all.
+telemetry and no analytics in any configuration.
+
+With contribution off, the app makes no network requests on its own. It is not
+silent in every configuration, and the distinction is worth stating: asking it to
+plan a colonisation run sends a market query, because that is the feature. That
+request carries commodity names and nothing about you, and happens only when you
+ask for it.
 
 [docs/PRIVACY.md](docs/PRIVACY.md) is the full account.
 

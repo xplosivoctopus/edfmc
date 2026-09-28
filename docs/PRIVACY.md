@@ -36,6 +36,22 @@ The station's MarketID, name, type, system, the service tokens your game reporte
 timestamp, the journal event name and its `file:byteOffset`, your game version and
 build, and the Companion version.
 
+### Commander-initiated traffic
+
+Contribution being off means the app initiates nothing on its own. It does not
+mean the app never makes a request.
+
+Building a sourcing plan queries `/v1/market/search`. That is not contribution
+and is deliberately not gated behind the contribution setting: it is the feature
+the commander just asked for, and a feature that silently did nothing would be
+worse than one that explains itself. The request carries the commodity names
+being planned for and the search options; it carries no identity, no location and
+no journal content, and it happens only on an explicit action.
+
+Reference lookups during verification are different — those *are* gated, and
+switching contribution off stops them at the next call rather than the next
+restart.
+
 ### Identity: what is sent, and what is kept
 
 This section said for some time that identifiers were "sent as one-way hashes". That
@@ -124,8 +140,10 @@ diagnostics export applies the same redaction plus a payload-free allowlist.
 
 ## Network features, and the rules they follow
 
-Station verification (Phase 5) is built. Research contribution (Phase 6) and
-market/logistics queries (Phase 8) are not. All of them honour these rules:
+Station verification and market/logistics queries are built. Research
+contribution is not: sessions are recorded locally and never sent, and
+`research_sessions.submitted_at` exists with nothing setting it. All of them
+honour these rules:
 
 1. **Opt-in.** Contribution features are off until explicitly enabled. Verification
    is off by default today, and revoking consent takes effect immediately.

@@ -1,6 +1,6 @@
 # Overlay
 
-**Design only — this is Phase 2.** Recorded now because the Phase 0 brief asked for
+**Built.** This began as a design note, recorded because the brief asked for
 overlay technique research before implementation.
 
 ## Hard constraints
@@ -97,7 +97,7 @@ Borderless, rather than rendering an invisible overlay and leaving them to guess
 §7 asks for exactly this: communicate the limitation instead of overpromising.
 
 This claim is stated as an expectation because it has not yet been empirically tested
-against Elite Dangerous on this hardware. That test is the first task of Phase 2, and
+against Elite Dangerous on this hardware. That test was done, and
 this document gets updated with the measured result either way.
 
 ## Licensing

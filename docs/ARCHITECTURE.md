@@ -1,6 +1,7 @@
 # EDFM Companion — Architecture
 
-Status: **Phase 0 complete / Phase 1 implemented**
+Status: **all phases implemented**. Sections below that describe a design
+decision still describe the shipped one unless they say otherwise.
 Last updated: 2026-09-01
 
 This document records *why* decisions were made. Code describes itself; this file
@@ -102,7 +103,7 @@ process that never touches the desktop toolchain.
 ### 2.4 Backend: TypeScript + PostgreSQL
 
 Shares typed contracts with the desktop client via `packages/contracts`. Migrations
-from commit one. Not yet implemented — Phase 5 onward.
+from commit one, and implemented: station verification ships with spoiler gating.
 
 ---
 
@@ -257,9 +258,9 @@ They never throw and never halt the pipeline.
 
 ---
 
-## 7. Overlay approach (design only — Phase 2)
+## 7. Overlay approach
 
-Planned: a separate Tauri window — `transparent`, `alwaysOnTop`, `decorations: false`
+Built as described: a separate Tauri window — `transparent`, `alwaysOnTop`, `decorations: false`
 — with `set_ignore_cursor_events(true)` in normal mode and `false` in edit mode.
 Position tracked against the Elite Dangerous window via Win32.
 
