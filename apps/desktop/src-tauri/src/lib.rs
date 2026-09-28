@@ -360,6 +360,90 @@ fn migrations() -> Vec<Migration> {
             );
         "#,
         kind: MigrationKind::Up,
+    },
+    Migration {
+        version: 10,
+        description: "activity journal",
+        sql: r#"
+            -- The commander's own field journal: what they did, in readable
+            -- form. NOT a copy of Frontier's journal, which already exists and
+            -- is already machine-readable. Only derived activity is stored,
+            -- plus enough provenance to audit how each entry was produced.
+            --
+            -- `id` is derived from the journal event that produced the entry
+            -- (`sourceFile:byteOffset`), which the engine already guarantees is
+            -- stable across restarts and replay. That makes deduplication a
+            -- property of the primary key rather than a procedure that can be
+            -- got wrong: re-reading a file re-derives the same ids and the
+            -- INSERT is simply ignored.
+            CREATE TABLE IF NOT EXISTS activity_entries (
+                id             TEXT PRIMARY KEY,
+                -- Two commanders on one machine must not inherit each other's
+                -- history. Local only; never transmitted (docs/PRIVACY.md).
+                commander_fid  TEXT NOT NULL,
+                occurred_at    TEXT NOT NULL,
+                category       TEXT NOT NULL,
+                subtype        TEXT NOT NULL,
+
+                system_name    TEXT,
+                system_address INTEGER,
+                -- NULL is meaningful: ScanOrganic reports a BodyID, not a name,
+                -- and "nothing has told us the name" is not the same as "no body".
+                body_name      TEXT,
+                body_id        INTEGER,
+                location_name  TEXT,
+
+                title          TEXT NOT NULL,
+                detail         TEXT,
+                -- Structured form of the same activity, so a later export or
+                -- search need not re-parse the prose.
+                data           TEXT NOT NULL,
+                -- The journal event ids this was derived from. An entry that
+                -- cannot be traced back is one nobody can check.
+                sources        TEXT NOT NULL,
+
+                created_at     TEXT NOT NULL
+            );
+
+            -- The timeline query: this commander's activity, newest first,
+            -- optionally filtered by category.
+            CREATE INDEX IF NOT EXISTS idx_activity_timeline
+                ON activity_entries (commander_fid, occurred_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_activity_category
+                ON activity_entries (commander_fid, category, occurred_at DESC);
+            -- Future search by place, which is how a commander actually looks
+            -- for something they remember doing.
+            CREATE INDEX IF NOT EXISTS idx_activity_system
+                ON activity_entries (commander_fid, system_name);
+
+            -- Sessions and notes: schema now, population later.
+            --
+            -- Defined in this migration on purpose. An automatic session
+            -- boundary is a guess about intent and will not be presented as a
+            -- fact until there is a rule worth defending, but adding the tables
+            -- later would be a migration against a table users already have
+            -- data in. Empty tables cost nothing.
+            CREATE TABLE IF NOT EXISTS activity_sessions (
+                id            TEXT PRIMARY KEY,
+                commander_fid TEXT NOT NULL,
+                started_at    TEXT NOT NULL,
+                ended_at      TEXT,
+                name          TEXT,
+                category      TEXT
+            );
+
+            CREATE TABLE IF NOT EXISTS activity_notes (
+                id            TEXT PRIMARY KEY,
+                commander_fid TEXT NOT NULL,
+                -- Exactly one of these is set.
+                entry_id      TEXT REFERENCES activity_entries(id) ON DELETE CASCADE,
+                session_id    TEXT REFERENCES activity_sessions(id) ON DELETE CASCADE,
+                body          TEXT NOT NULL,
+                created_at    TEXT NOT NULL,
+                updated_at    TEXT NOT NULL
+            );
+        "#,
+        kind: MigrationKind::Up,
     }]
 }
 

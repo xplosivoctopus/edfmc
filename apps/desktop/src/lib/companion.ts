@@ -87,6 +87,12 @@ import {
 import { logger } from './logger.js';
 import { httpFetch } from './http.js';
 import {
+  ActivityEngine,
+  groupActivity,
+  type ActivityEntry,
+  type ActivityGroup,
+} from '@edfm/activity';
+import {
   backfillCarrierIdentities,
   backfillCarrierJumps,
   backfillExobiologyHoldings,
@@ -213,6 +219,8 @@ export interface CompanionSnapshot {
   readonly contexts: readonly ActiveContext[];
   /** Scheduled jumps for the commander's own carriers, soonest first. */
   readonly carrierJumps: readonly OverlayCarrierJump[];
+  /** The commander's field journal, newest first. Local only, never transmitted. */
+  readonly activity: readonly ActivityGroup[];
   readonly contextRuleVersion: number;
   readonly contextRuleSource: string;
   readonly missions: MissionView;
@@ -357,8 +365,49 @@ const EMPTY_STATS: IngestStats = {
   emptyFilesSkipped: 0,
 };
 
+/**
+ * Parse a stored JSON object without letting one corrupt row break the timeline.
+ *
+ * Anything that is not a plain object becomes an empty one: a row written by a
+ * future version, or half-written by a crash, should cost its own detail rather
+ * than the whole screen.
+ */
+function safeJsonObject(text: string): Record<string, unknown> {
+  try {
+    const value = JSON.parse(text) as unknown;
+    return value !== null && typeof value === 'object' && !Array.isArray(value)
+      ? (value as Record<string, unknown>)
+      : {};
+  } catch {
+    return {};
+  }
+}
+
+/** The same, for a stored array of strings. */
+function safeJsonStrings(text: string): string[] {
+  try {
+    const value = JSON.parse(text) as unknown;
+    return Array.isArray(value) ? value.filter((v): v is string => typeof v === 'string') : [];
+  } catch {
+    return [];
+  }
+}
+
 export class Companion {
   private started = false;
+  /* -------------------------------------------------- activity journal */
+
+  /**
+   * Derived activity, kept in memory for the UI and written through to SQLite.
+   *
+   * Bounded: the screen shows a timeline, not an archive. The database holds
+   * everything; this is the working set, so a commander with years of history
+   * does not pay for it on every render.
+   */
+  private readonly activity = new ActivityEngine({ commanderFid: null });
+  private activityEntries: ActivityEntry[] = [];
+  private static readonly ACTIVITY_IN_MEMORY = 500;
+
   private overlayEnabled = false;
   /** Mirrors the overlay's own `hide_when_inactive`, so it can be restored with it. */
   private overlayHideInactive = true;
@@ -556,6 +605,7 @@ export class Companion {
         lastError: this.lastError,
         contexts: this.projectedContexts(),
         carrierJumps: this.projectCarrierJumps(),
+        activity: groupActivity(this.activityEntries),
         contextRuleVersion: this.resolver.version,
         contextRuleSource: this.resolver.source,
         missions: this.missionView(),
@@ -860,6 +910,19 @@ export class Companion {
     // Likewise the kind of Material Trader a station has, which is only ever
     // revealed by trading there.
     if (event.kind === 'trader-identity') void this.saveTraderIdentity(event);
+
+    // The field journal. Most events produce nothing, so this is a cheap call on
+    // the high-frequency path and only notifies when something was actually
+    // recorded -- a render per journal line would be unusable during a scan run.
+    const activity = this.activity.observe(event);
+    if (activity.length > 0) {
+      this.activityEntries = [...activity, ...this.activityEntries].slice(
+        0,
+        Companion.ACTIVITY_IN_MEMORY,
+      );
+      void this.saveActivity(activity);
+      this.notify();
+    }
 
     // Context resolution runs on every event, including the high-frequency ones:
     // a rule may legitimately key on them, and evaluating a dozen declarative
@@ -1177,6 +1240,13 @@ export class Companion {
     this.discovery = await this.loadDiscovery(fid);
     this.discoveryDirty = false;
 
+    // The field journal is scoped the same way and for the same reason: two
+    // commanders on one machine must not inherit each other's history. The
+    // engine is told first so nothing is recorded against the outgoing FID.
+    this.activity.setCommander(fid);
+    this.activityEntries = [];
+    await this.loadActivity(fid);
+
     logger.info('discovery', 'Commander changed; discovery state swapped', {
       // FIDs identify a person's account; only whether one was present is logged.
       hadPrevious: previous !== null,
@@ -1396,6 +1466,117 @@ export class Companion {
   }
 
 
+
+  /* -------------------------------------------------- activity journal */
+
+  /**
+   * Write new activity through to SQLite.
+   *
+   * `INSERT OR IGNORE`, because the id is derived from the journal event and is
+   * therefore already stable across restart and replay. Re-reading a file
+   * re-derives the same ids and the write is simply dropped -- deduplication is
+   * a property of the key rather than a procedure to get right.
+   *
+   * Never awaited by the caller: the field journal is a record, not a gate on
+   * ingest.
+   */
+  private async saveActivity(entries: readonly ActivityEntry[]): Promise<void> {
+    if (!this.db || entries.length === 0) return;
+    const now = new Date().toISOString();
+
+    try {
+      for (const e of entries) {
+        await this.db.execute(
+          `INSERT OR IGNORE INTO activity_entries
+             (id, commander_fid, occurred_at, category, subtype,
+              system_name, system_address, body_name, body_id, location_name,
+              title, detail, data, sources, created_at)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)`,
+          [
+            e.id,
+            e.commanderFid,
+            e.occurredAt,
+            e.category,
+            e.subtype,
+            e.systemName,
+            e.systemAddress,
+            e.bodyName,
+            e.bodyId,
+            e.locationName,
+            e.title,
+            e.detail,
+            JSON.stringify(e.data),
+            JSON.stringify(e.sources),
+            now,
+          ],
+        );
+      }
+      // Count and category only. Titles carry system names, body names and
+      // organism discoveries, and none of that belongs in a log (§21).
+      logger.info('activity', 'Recorded activity', {
+        count: entries.length,
+        categories: [...new Set(entries.map((e) => e.category))],
+      });
+    } catch (err) {
+      logger.warn('db', 'Could not record activity', { error: String(err) });
+    }
+  }
+
+  /**
+   * Load this commander's recent activity.
+   *
+   * Scoped by FID so two commanders on one machine never see each other's
+   * history. Bounded, because the screen is a timeline rather than an archive.
+   */
+  private async loadActivity(fid: string): Promise<void> {
+    if (!this.db) return;
+    try {
+      const rows = await this.db.select<
+        Array<{
+          id: string;
+          commander_fid: string;
+          occurred_at: string;
+          category: string;
+          subtype: string;
+          system_name: string | null;
+          system_address: number | null;
+          body_name: string | null;
+          body_id: number | null;
+          location_name: string | null;
+          title: string;
+          detail: string | null;
+          data: string;
+          sources: string;
+        }>
+      >(
+        `SELECT * FROM activity_entries
+          WHERE commander_fid = $1
+          ORDER BY occurred_at DESC
+          LIMIT $2`,
+        [fid, Companion.ACTIVITY_IN_MEMORY],
+      );
+
+      this.activityEntries = rows.map((r) => ({
+        id: r.id,
+        commanderFid: r.commander_fid,
+        occurredAt: r.occurred_at,
+        category: r.category as ActivityEntry['category'],
+        subtype: r.subtype,
+        systemName: r.system_name,
+        systemAddress: r.system_address,
+        bodyName: r.body_name,
+        bodyId: r.body_id,
+        locationName: r.location_name,
+        title: r.title,
+        detail: r.detail,
+        data: safeJsonObject(r.data),
+        sources: safeJsonStrings(r.sources),
+      }));
+      this.notify();
+    } catch (err) {
+      logger.warn('db', 'Could not load activity', { error: String(err) });
+    }
+  }
 
   /* ------------------------------------------------ exobiology holdings */
 

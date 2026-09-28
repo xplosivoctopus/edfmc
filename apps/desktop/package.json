@@ -12,6 +12,7 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@edfm/activity": "*",
     "@edfm/context": "*",
     "@edfm/elite-journal": "*",
     "@edfm/logistics": "*",

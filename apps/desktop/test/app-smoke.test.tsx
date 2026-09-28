@@ -121,6 +121,26 @@ describe('application startup', () => {
     expect(companion.snapshot().carrierJumps).toBe(companion.snapshot().carrierJumps);
   });
 
+  it('renders the Journal screen without a database', async () => {
+    // The Activity Journal reads from SQLite, which is unavailable here. An empty
+    // timeline must render as an empty timeline rather than throwing -- a screen
+    // that only works once there is data is a screen nobody sees on day one.
+    await mountApp();
+    const { companion } = await import('../src/lib/companion');
+    expect(companion.snapshot().activity).toEqual([]);
+
+    const journal = [...container.querySelectorAll('button')].find(
+      (b) => b.textContent?.trim() === 'Journal',
+    );
+    expect(journal, 'the Journal section should be reachable').toBeDefined();
+
+    await act(async () => {
+      journal!.click();
+    });
+    expect(container.textContent).toContain('Journal');
+    expect(container.textContent).toContain('never uploaded');
+  });
+
   it('makes no network request during a cold start', async () => {
     // Verification is opt-in. A fresh install that has never consented must not
     // contact the API to find that out.

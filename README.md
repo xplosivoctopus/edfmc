@@ -40,6 +40,8 @@ Two things to expect on first run:
   rather than doing the arithmetic.
 - **Tracks colonisation sites** automatically and plans your buying: which
   stations to visit, in what order, and why each one was chosen.
+- **Keeps a field journal** of what you actually did — organisms sampled, bodies
+  landed on, signals found — built from your journal and kept on your machine.
 - **Records field research** locally — what you find at settlements — with the
   honesty to say when a sample is too small to mean anything.
 - **Takes plugins**, which are plain JSON and cannot run code. See
@@ -175,6 +177,7 @@ scripts/             Journal profiling tooling
 | [DISCORD.md](docs/DISCORD.md) | Forum reporting, duplicate policy, tag configuration |
 | [DEPLOYMENT.md](docs/DEPLOYMENT.md) | How the API and EDDN worker are hosted and updated |
 | [RELEASING.md](docs/RELEASING.md) | Release process, the code-signing gap, checksums and provenance |
+| [ACTIVITY-JOURNAL.md](docs/ACTIVITY-JOURNAL.md) | The commander field journal: what is recorded, and what the journal cannot prove |
 | [RESEARCH.md](docs/RESEARCH.md) | Research framework, session model, data-quality rules |
 | [LOGISTICS.md](docs/LOGISTICS.md) | Confidence engine, sourcing planner, construction projects |
 | [PLUGINS.md](docs/PLUGINS.md) | Installing and writing plugins, and why they are safe |

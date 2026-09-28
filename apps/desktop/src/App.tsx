@@ -12,6 +12,7 @@ import {
 import { openUrl } from '@tauri-apps/plugin-opener';
 
 import { Logistics } from './Logistics';
+import { Journal } from './Journal';
 import { Research } from './Research';
 import { Contributions } from './Contributions';
 import { Plugins as PluginsScreen } from './Plugins';
@@ -47,9 +48,10 @@ const SECTIONS = [
   'Context',
   'Missions',
   'Logistics',
+  'Overlay',
+  'Journal',
   'Research',
   'Contributions',
-  'Overlay',
   'Plugins',
   'Settings',
   'Diagnostics',
@@ -62,6 +64,7 @@ const IMPLEMENTED: ReadonlySet<Section> = new Set<Section>([
   'Dashboard',
   'Overlay',
   'Logistics',
+  'Journal',
   'Research',
   'Contributions',
   'Plugins',
@@ -122,6 +125,7 @@ export default function App() {
         {section === 'Missions' && <MissionsPanel snap={snap} />}
         {section === 'Overlay' && <OverlayPanel />}
         {section === 'Logistics' && <Logistics snap={snap} />}
+        {section === 'Journal' && <Journal snap={snap} />}
         {section === 'Research' && <Research snap={snap} />}
         {section === 'Contributions' && <Contributions snap={snap} />}
         {section === 'Plugins' && <PluginsScreen snap={snap} />}
