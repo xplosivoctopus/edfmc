@@ -20,6 +20,7 @@
     "@edfm/research": "*",
     "@edfm/verification": "*",
     "@tauri-apps/api": "^2",
+    "@tauri-apps/plugin-http": "^2",
     "@tauri-apps/plugin-opener": "^2",
     "@tauri-apps/plugin-sql": "^2",
     "react": "^19.1.0",

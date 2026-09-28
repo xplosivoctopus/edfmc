@@ -367,6 +367,15 @@ fn migrations() -> Vec<Migration> {
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        // Outbound HTTP goes through Rust, not the WebView.
+        //
+        // The WebView's CSP would otherwise have to name the API origin, and the
+        // API would have to relax CORS for the app's origin -- weakening the
+        // server for every client in order to serve this one. Routing through the
+        // plugin keeps the API same-origin-only from any browser's point of view,
+        // and puts the allowlist in `capabilities/default.json`, where it is
+        // enforced natively and is auditable in one place.
+        .plugin(tauri_plugin_http::init())
         .plugin(
             tauri_plugin_sql::Builder::default()
                 .add_migrations("sqlite:edfm-companion.db", migrations())

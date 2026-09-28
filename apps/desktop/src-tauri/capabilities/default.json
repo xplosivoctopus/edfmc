@@ -2,7 +2,9 @@
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
   "description": "Main window. Journal access goes through narrow custom commands rather than a broad filesystem permission.",
-  "windows": ["main"],
+  "windows": [
+    "main"
+  ],
   "permissions": [
     "core:default",
     "opener:default",
@@ -11,6 +13,14 @@
     "sql:allow-load",
     "sql:allow-execute",
     "sql:allow-select",
-    "sql:allow-close"
+    "sql:allow-close",
+    {
+      "identifier": "http:default",
+      "allow": [
+        {
+          "url": "https://api.edfieldmanual.com/*"
+        }
+      ]
+    }
   ]
 }

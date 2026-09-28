@@ -92,6 +92,7 @@ import {
 } from '@edfm/research';
 
 import { logger } from './logger.js';
+import { httpFetch } from './http.js';
 import { policyFor, projectResources } from './spoiler.js';
 import {
   DEFAULT_WIDGETS,
@@ -398,6 +399,8 @@ export class Companion {
    */
   private readonly reference: ReferenceClient = createReferenceClient({
     baseUrl: API_BASE_URL,
+    // Native HTTP, not the WebView's. See lib/http.ts for why.
+    fetchImpl: httpFetch,
     isEnabled: () => this.verificationEnabled,
     // A lookup during ingest can only miss, because it cannot wait for the
     // network. When the data lands, the event that missed is compared again --
@@ -457,6 +460,7 @@ export class Companion {
 
   private readonly submitter: Submitter = createSubmitter({
     baseUrl: API_BASE_URL,
+    fetchImpl: httpFetch,
     // Consulted per call, so revoking consent stops submission immediately
     // rather than at the next restart.
     isEnabled: () => this.verificationEnabled,
@@ -1821,7 +1825,7 @@ export class Companion {
     this.notify();
 
     try {
-      const response = await fetch(API_BASE_URL + '/v1/market/search', {
+      const response = await httpFetch(API_BASE_URL + '/v1/market/search', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({
