@@ -350,8 +350,10 @@ function ContextPanel({ snap }: { snap: Snap }) {
       ) : (
         contexts.map((ctx) => (
           <section className="card" key={ctx.rule.id}>
-            <h2>{ctx.rule.title}</h2>
-            {ctx.rule.subtitle && <p className="muted">{ctx.rule.subtitle}</p>}
+            {/* The resolved text, not the rule's template: a rule may state a
+                count taken from the event that matched it. */}
+            <h2>{ctx.title}</h2>
+            {ctx.subtitle && <p className="muted">{ctx.subtitle}</p>}
 
             {ctx.rule.actions && ctx.rule.actions.length > 0 && (
               <ol className="context-actions">

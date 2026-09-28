@@ -16,6 +16,7 @@ import {
   evaluate,
   pageUrl,
   resourceUrl,
+  renderTemplate,
   sanitise,
   type ContextRuleSet,
 } from '../src/index.js';
@@ -954,5 +955,109 @@ describe('planet DSS contexts', () => {
     expect(ids).toContain('mining-ring-scan');
     expect(ids).not.toContain('planet-biological-signals');
     expect(ids).not.toContain('planet-surface-mining');
+  });
+});
+
+describe('rule text placeholders', () => {
+  function render(text: string, line: string): string | null {
+    return renderTemplate(text, { event: ev(line), state: initialState() });
+  }
+
+  it('states the count from the event that matched', () => {
+    // The whole point: the number is in the event, and rule text could not reach it.
+    expect(render('{event.Genuses.length} found', SAA_PLANET_BIO_AND_MINING)).toBe('1 found');
+  });
+
+  it('picks the singular when the value is one', () => {
+    // 47 of 105 real biological scans have exactly one genus, so "1 signals" would
+    // have been wrong 45% of the time.
+    const t = '{event.Genuses.length} biological {event.Genuses.length|signal|signals} detected';
+    expect(render(t, SAA_PLANET_BIO_AND_MINING)).toBe('1 biological signal detected');
+  });
+
+  it('picks the plural for anything else', () => {
+    const two =
+      '{ "timestamp":"2026-07-11T04:00:00Z", "event":"SAASignalsFound", "BodyName":"X 1 a", "SystemAddress":1, "BodyID":2, "Signals":[ { "Type":"$SAA_SignalType_Biological;", "Count":2 } ], "Genuses":[ { "Genus":"$A;" }, { "Genus":"$B;" } ] }';
+    const t = '{event.Genuses.length} biological {event.Genuses.length|signal|signals} detected';
+    expect(render(t, two)).toBe('2 biological signals detected');
+  });
+
+  it('leaves text without placeholders exactly as written', () => {
+    expect(render('Hotspot signals found', SAA_RING)).toBe('Hotspot signals found');
+  });
+
+  it('reads commander state as well as the event', () => {
+    const state = stateWith(DOCKED_TRADER_STATION);
+    expect(
+      renderTemplate('Docked at {state.stationName}', { event: ev(MUSIC), state }),
+    ).toBe('Docked at Ray Gateway');
+  });
+
+  it('renders nothing when the value is not known', () => {
+    // "undefined biological signals" would assert a measurement that was never
+    // made. Returning null lets the caller omit the line instead.
+    expect(render('{event.Nope} found', SAA_RING)).toBeNull();
+    expect(
+      renderTemplate('{state.stationName} ahead', { event: ev(MUSIC), state: initialState() }),
+    ).toBeNull();
+  });
+
+  it('refuses a root it does not recognise', () => {
+    // No implicit root: {Genuses.length} would mean different things depending on
+    // whether an event happened to carry a field of that name.
+    expect(render('{Genuses.length}', SAA_PLANET_BIO_AND_MINING)).toBeNull();
+    expect(render('{process.env.SECRET}', SAA_RING)).toBeNull();
+  });
+
+  it('refuses prototype-walking paths', () => {
+    expect(render('{event.__proto__}', SAA_RING)).toBeNull();
+    expect(render('{event.constructor.name}', SAA_RING)).toBeNull();
+  });
+
+  it('will not render an object or array', () => {
+    // No honest one-line form, and "[object Object]" over the game is worse than
+    // saying nothing.
+    expect(render('{event.Signals}', SAA_RING)).toBeNull();
+    expect(render('{event.Genuses.0}', SAA_PLANET_BIO_AND_MINING)).toBeNull();
+  });
+
+  it('refuses a malformed plural form rather than guessing', () => {
+    expect(render('{event.Genuses.length|one}', SAA_PLANET_BIO_AND_MINING)).toBeNull();
+    expect(render('{event.Genuses.length|a|b|c}', SAA_PLANET_BIO_AND_MINING)).toBeNull();
+  });
+
+  it('treats an unclosed brace as prose', () => {
+    // Rule authors write sentences, and sentences contain braces.
+    expect(render('100% {complete', SAA_RING)).toBe('100% {complete');
+  });
+
+  it('caps the number of placeholders', () => {
+    const many = '{event.Genuses.length}'.repeat(9);
+    expect(render(many, SAA_PLANET_BIO_AND_MINING)).toBeNull();
+  });
+
+  it('does not render a * path, which has no single value', () => {
+    expect(render('{event.Signals.*.Type}', SAA_RING)).toBeNull();
+  });
+});
+
+describe('rendered text reaches the active context', () => {
+  it('the bundled biological rule states how many', () => {
+    const r = new ContextResolver(BUNDLED_RULES, { now: () => 1000, maxActive: 5 });
+    r.observe(ev(SAA_PLANET_BIO_AND_MINING), initialState());
+
+    const ctx = r.current().find((a) => a.rule.id === 'planet-biological-signals');
+    expect(ctx).toBeDefined();
+    expect(ctx!.subtitle).toBe('1 biological signal detected');
+    // The rule itself still holds the template, untouched.
+    expect(ctx!.rule.subtitle).toContain('{event.Genuses.length}');
+  });
+
+  it('a rule without placeholders is carried through unchanged', () => {
+    const r = new ContextResolver(BUNDLED_RULES, { now: () => 1000, maxActive: 5 });
+    r.observe(ev(SAA_RING), initialState());
+    const ctx = r.current().find((a) => a.rule.id === 'mining-ring-scan');
+    expect(ctx!.title).toBe('Ring scanned');
+    expect(ctx!.subtitle).toBe('Hotspot signals found');
   });
 });

@@ -112,6 +112,12 @@ function walkPath(root: unknown, segments: readonly string[], from: number): unk
     }
 
     if (Array.isArray(current)) {
+      // `length` is the one property of an array worth reading. Supporting it here
+      // rather than inventing a separate count operator keeps one path syntax.
+      if (segment === 'length') {
+        current = current.length;
+        continue;
+      }
       const index = Number(segment);
       if (!Number.isInteger(index) || index < 0 || index >= current.length) return undefined;
       current = current[index];
@@ -123,6 +129,22 @@ function walkPath(root: unknown, segments: readonly string[], from: number): unk
   }
 
   return current;
+}
+
+/**
+ * Resolve a dotted path to a single primitive, for rule-text substitution.
+ *
+ * Shares `readPath` with the conditions, so prototype-walking segments, the `*`
+ * bounds and the UNKNOWN sentinel are all handled once rather than reimplemented
+ * somewhere that could drift.
+ *
+ * A `*` path is deliberately NOT renderable: it yields several candidates, which is
+ * exactly what a condition wants and exactly what a sentence cannot use.
+ */
+export function readPathValue(root: unknown, path: string): unknown {
+  const value = readPath(root, path);
+  if (value instanceof Gathered) return undefined;
+  return plain(value);
 }
 
 /** Unwrap the UNKNOWN sentinel so state comparisons see a plain value. */

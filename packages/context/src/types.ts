@@ -147,6 +147,15 @@ export interface ContextRuleSet {
 /** A rule currently considered relevant. */
 export interface ActiveContext {
   readonly rule: ContextRule;
+  /**
+   * Rule text with placeholders resolved against the event that matched.
+   *
+   * Rendered here rather than at display time because the values come from the
+   * triggering event, which is gone by the time the UI draws. Equal to the rule's
+   * own strings when it contains no placeholders, which is almost all of them.
+   */
+  readonly title: string;
+  readonly subtitle: string | null;
   /** When it last matched (epoch ms). */
   readonly matchedAt: number;
   /** When it stops being relevant (epoch ms). */

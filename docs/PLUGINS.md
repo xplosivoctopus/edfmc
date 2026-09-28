@@ -122,6 +122,35 @@ be told, not have their plugin quietly altered into something else.
 }
 ```
 
+### Putting a number in your title or subtitle
+
+Rule text may carry placeholders, resolved against the event that matched:
+
+```json
+{
+  "title": "Biological signals",
+  "subtitle": "{event.Genuses.length} biological {event.Genuses.length|signal|signals} detected"
+}
+```
+
+- `{event.<path>}` reads the raw journal event; `{state.<path>}` reads commander
+  state. The root must be named — there is no implicit one, because `{Genuses}`
+  would otherwise mean different things depending on what an event happened to
+  carry.
+- `{path|singular|plural}` picks the first form when the value is exactly `1`.
+  Bother with it: 47 of 105 real biological scans have exactly one genus, so a fixed
+  plural reads wrongly on nearly half of them.
+- `.length` works on arrays.
+
+There is no expression language — no arithmetic, no function calls, no regex. A
+placeholder names a path and nothing else.
+
+**If a placeholder cannot be resolved, the text is not rendered at all**: a subtitle
+is omitted, and a title falls back to its literal parts. This is deliberate. "The
+game did not say how many" and "there are none" are different facts, and a subtitle
+reading `undefined biological signals` would assert the first as if it were the
+second. Objects and arrays do not render either, for the same reason.
+
 ### Matching inside an array
 
 A `field` path may contain `*`, meaning **any element**:

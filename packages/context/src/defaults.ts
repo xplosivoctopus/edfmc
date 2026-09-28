@@ -353,7 +353,7 @@ export const BUNDLED_RULES: ContextRuleSet = {
     {
       id: 'planet-biological-signals',
       title: 'Biological signals',
-      subtitle: 'Exobiology detected on this body',
+      subtitle: '{event.Genuses.length} biological {event.Genuses.length|signal|signals} detected',
       when: {
         kind: 'all',
         of: [

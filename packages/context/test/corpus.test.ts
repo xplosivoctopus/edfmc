@@ -20,6 +20,7 @@ import '@edfm/elite-journal/node';
 
 import { BUNDLED_RULES } from '../src/defaults.js';
 import { evaluate } from '../src/evaluate.js';
+import { renderTemplate } from '../src/template.js';
 
 const home = process.env['USERPROFILE'] ?? process.env['HOME'] ?? '';
 const DIR =
@@ -113,6 +114,48 @@ suite('bundled rules against the real corpus', () => {
     expect(wrong, 'misclassified: ' + wrong.slice(0, 10).join(' / ')).toHaveLength(0);
     expect(bioExpected).toBeGreaterThan(0);
     expect(miningExpected).toBeGreaterThan(0);
+  });
+
+  it('renders a grammatical biological subtitle for every real scan', async () => {
+    // 47 of 105 biological scans have exactly one genus, so a fixed plural would
+    // read wrongly on nearly half of them. This checks the rendered sentence on
+    // every scan the commander has actually made, rather than a chosen fixture.
+    const rule = BUNDLED_RULES.rules.find((r) => r.id === 'planet-biological-signals');
+    expect(rule?.subtitle).toBeDefined();
+
+    const files = await listJournalFiles(DIR);
+    const state = initialState();
+    const rendered = new Set<string>();
+    let checked = 0;
+    let singular = 0;
+
+    for (const f of files.filter((x) => x.sizeBytes > 0)) {
+      const result = await replayFile(f.fullPath);
+      for (const event of result.events) {
+        if (event.source.event !== 'SAASignalsFound') continue;
+        if (!evaluate(rule!.when, { event, state })) continue;
+
+        const text = renderTemplate(rule!.subtitle!, { event, state });
+        expect(text, `unrenderable for ${String((event.source.raw as Record<string, unknown>)['BodyName'])}`).not.toBeNull();
+        rendered.add(text!);
+        checked += 1;
+
+        const n = Number(text!.split(' ')[0]);
+        expect(Number.isFinite(n)).toBe(true);
+        if (n === 1) {
+          singular += 1;
+          expect(text).toContain(' signal ');
+          expect(text).not.toContain(' signals ');
+        } else {
+          expect(text).toContain(' signals ');
+        }
+      }
+    }
+
+    if (checked === 0) return;
+    // Both forms must occur, or the plural handling is untested by this corpus.
+    expect(singular).toBeGreaterThan(0);
+    expect(checked - singular).toBeGreaterThan(0);
   });
 
   it('never fires a station rule while the commander is not docked', async () => {

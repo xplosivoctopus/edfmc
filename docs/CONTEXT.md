@@ -255,6 +255,33 @@ The mining rule needed a capability the engine did not have: that signal sits at
 `*` for "any element", bounded to two stars and 64 gathered values because rule sets
 arrive from a server and from plugins.
 
+### Rule text can state a number
+
+Rule strings were fixed, so a rule could say "biological signals detected" but never
+how many — the count sits in the event the rule just matched and nothing carried it
+through. Titles and subtitles now take placeholders:
+
+```
+{event.Genuses.length} biological {event.Genuses.length|signal|signals} detected
+```
+
+`Genuses.length` is used rather than the signal's own `Count` because they are
+identical on all 105 measured events and it is the same field the rule's condition
+already keys on. The plural form is not decoration: **47 of those 105 scans have
+exactly one genus**, so a fixed plural would read wrongly on nearly half of them.
+
+Resolution happens in the resolver at match time, not at display time, because the
+values come from the triggering event and it is gone by the time the UI draws. The
+rendered strings live on `ActiveContext`; the rule keeps its template untouched.
+Re-matching an active rule normally counts as no visible change, with rendered text
+the exception — a count that has moved is exactly what the commander is watching.
+
+The syntax stays tiny on purpose, since these strings come from a server or a
+plugin and are drawn over someone's game: a path and an optional plural form, no
+expression language, and the same `readPath` the conditions use so the prototype
+guards and `*` bounds are inherited rather than rewritten. An unresolvable
+placeholder renders nothing rather than `undefined`.
+
 ## A context has to be able to end
 
 The commander knows what they just did. What deserves the screen is what is true

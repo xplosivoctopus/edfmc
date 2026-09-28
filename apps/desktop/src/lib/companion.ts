@@ -994,14 +994,14 @@ export class Companion {
         missions: this.overlayMissions(),
         widgets: this.widgets,
         alsoActive: alsoActive.map((c) => ({
-          title: c.rule.title,
-          subtitle: c.rule.subtitle ?? null,
+          title: c.title,
+          subtitle: c.subtitle,
         })),
         carrierJumps: this.projectCarrierJumps(),
         context: top
           ? {
-              title: top.rule.title,
-              subtitle: top.rule.subtitle ?? null,
+              title: top.title,
+              subtitle: top.subtitle,
               actions: top.rule.actions ?? [],
               note: top.rule.note ?? null,
               resources: top.rule.resources

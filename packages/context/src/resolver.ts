@@ -9,6 +9,7 @@
 import type { CommanderState, NormalizedEvent } from '@edfm/elite-journal';
 
 import { evaluate, usesEvent } from './evaluate.js';
+import { renderTemplate } from './template.js';
 import { RULE_LIMITS, type ActiveContext, type ContextRule, type ContextRuleSet } from './types.js';
 
 export interface ResolverOptions {
@@ -85,8 +86,19 @@ export class ContextResolver {
       }
 
       const previous = this.active.get(rule.id);
+
+      // Rendered against the event that matched, because that event carries the
+      // values and will not be available later. A rule with no placeholders costs
+      // one indexOf.
+      const input = { event, state };
+      const title = renderTemplate(rule.title, input) ?? stripPlaceholders(rule.title);
+      const subtitle =
+        rule.subtitle === undefined ? null : renderTemplate(rule.subtitle, input);
+
       this.active.set(rule.id, {
         rule,
+        title,
+        subtitle,
         matchedAt: now,
         // State-scoped rules are held open by their condition, not by a clock.
         expiresAt: this.stateScoped.has(rule.id)
@@ -95,9 +107,12 @@ export class ContextResolver {
         triggerEvent: event.source.event,
         triggerEventId: event.source.provenance.eventId,
       });
-      // Re-matching an already-active rule only refreshes its expiry; that is not a
-      // visible change and should not force a render.
-      if (!previous) changed = true;
+      // Re-matching an already-active rule normally only refreshes its expiry, which
+      // is not a visible change. Rendered text is the exception: a count that has
+      // moved is exactly the sort of thing the commander is watching for.
+      if (!previous || previous.title !== title || previous.subtitle !== subtitle) {
+        changed = true;
+      }
     }
 
     return changed;
@@ -179,6 +194,36 @@ export class ContextResolver {
  * a nonsensical rule simply never matches — but it does stop an oversized or
  * malformed payload from degrading the client.
  */
+/**
+ * Fallback when a placeholder cannot be resolved.
+ *
+ * A title must render as something, so the literal parts are kept and the
+ * unresolvable placeholder is dropped rather than printed raw. A subtitle is
+ * optional and is simply omitted instead — see `renderTemplate`.
+ */
+function stripPlaceholders(text: string): string {
+  let out = '';
+  let i = 0;
+  while (i < text.length) {
+    const open = text.indexOf('{', i);
+    if (open === -1) {
+      out += text.slice(i);
+      break;
+    }
+    const close = text.indexOf('}', open + 1);
+    if (close === -1) {
+      out += text.slice(i);
+      break;
+    }
+    out += text.slice(i, open);
+    i = close + 1;
+  }
+  const collapsed = out.split(' ').filter((w) => w.length > 0).join(' ').trim();
+  // If a title was nothing but placeholders there is no honest shorter form, so
+  // the raw template is better than an empty heading.
+  return collapsed.length > 0 ? collapsed : text;
+}
+
 export function sanitise(ruleSet: ContextRuleSet): ContextRuleSet {
   const rules: ContextRule[] = [];
   const seen = new Set<string>();
