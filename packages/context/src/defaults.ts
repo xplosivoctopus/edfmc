@@ -306,11 +306,33 @@ export const BUNDLED_RULES: ContextRuleSet = {
         { label: 'How to Use a Prospector Limpet', page: 'How to Use a Prospector Limpet' },
       ],
     },
+    /*
+     * `SAASignalsFound` fires for EVERY detailed surface scan, not just rings.
+     * Measured: 198 events, of which only 29 are rings -- so keying on the event
+     * name alone was wrong 85% of the time, and the overlay announced "Ring
+     * scanned -- hotspot signals found" after DSS-ing a planet.
+     *
+     * The same trap as `ApproachSettlement` firing at Guardian ruins: an event name
+     * that reads like it means one thing and fires for a superset.
+     *
+     * `BodyName` ending in "Ring" separates them exactly -- 29 of 29 rings, zero
+     * false positives across the corpus. A structural test on the signal payload
+     * was tried and is worse: ring signals are bare commodity names
+     * ("Serendibite") while planet signals are `$SAA_SignalType_*;` tokens, but
+     * planets with surface mining sites report `$PlanetaryMiningLocation_Name;`,
+     * which that test misclassified 11 times.
+     */
     {
       id: 'mining-ring-scan',
       title: 'Ring scanned',
       subtitle: 'Hotspot signals found',
-      when: { kind: 'event', name: 'SAASignalsFound' },
+      when: {
+        kind: 'all',
+        of: [
+          { kind: 'event', name: 'SAASignalsFound' },
+          { kind: 'field', path: 'BodyName', op: 'endsWith', value: 'Ring' },
+        ],
+      },
       priority: 60,
       ttlSeconds: 600,
       // Leaving the ring ends the mining session.

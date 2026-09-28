@@ -91,6 +91,18 @@ const UNDOCKED =
 const FSD_JUMP =
   '{ "timestamp":"2026-09-18T07:05:00Z", "event":"FSDJump", "Taxi":false, "Multicrew":false, "StarSystem":"Diaguandri", "SystemAddress":670417429889, "StarPos":[-41.06,-62.15,-103.25], "SystemAllegiance":"Independent", "JumpDist":8.523, "FuelUsed":0.62, "FuelLevel":31.2 }';
 
+/** Verbatim DSS of a ring: signals are bare commodity names. */
+const SAA_RING =
+  '{ "timestamp":"2026-08-22T04:26:04Z", "event":"SAASignalsFound", "BodyName":"Wregoe KO-G c24-10 BCD 2 A Ring", "SystemAddress":2833504080594, "BodyID":32, "Signals":[ { "Type":"Serendibite", "Count":2 }, { "Type":"Painite", "Count":1 } ], "Genuses":[] }';
+
+/** Verbatim DSS of a planet. Same event; nothing to do with rings. */
+const SAA_PLANET =
+  '{ "timestamp":"2026-07-11T02:01:37Z", "event":"SAASignalsFound", "BodyName":"HIP 12099 1 b", "SystemAddress":560216394075, "BodyID":16, "Signals":[ { "Type":"$SAA_SignalType_Other;", "Type_Localised":"Other", "Count":1 }, { "Type":"$SAA_SignalType_Geological;", "Type_Localised":"Geological", "Count":3 } ], "Genuses":[] }';
+
+/** A planet with a surface mining site -- still not a ring. */
+const SAA_PLANET_MINING =
+  '{ "timestamp":"2026-07-11T03:00:00Z", "event":"SAASignalsFound", "BodyName":"Wregoe KO-G c24-7 16 a", "SystemAddress":2833504080594, "BodyID":21, "Signals":[ { "Type":"$PlanetaryMiningLocation_Name;", "Count":1 } ], "Genuses":[] }';
+
 const INTERDICTED =
   '{ "timestamp":"2026-09-18T06:00:00Z", "event":"Interdicted", "Submitted":false, "Interdictor":"Cory Reynolds", "IsPlayer":false, "Faction":"Sirius Special Forces", "Power":"Li Yong-Rui" }';
 
@@ -825,5 +837,30 @@ describe('an activity ends when the commander moves on', () => {
     expect(clean.endsOn).not.toContain('');
     expect(clean.endsOn!.every((e) => typeof e === 'string')).toBe(true);
     expect(clean.endsOn!.every((e) => e.length <= 512)).toBe(true);
+  });
+});
+
+describe('ring scans are not planet scans', () => {
+  function active(line: string): string[] {
+    const r = new ContextResolver(BUNDLED_RULES, { now: () => 1000, maxActive: 5 });
+    r.observe(ev(line), initialState());
+    return r.current().map((a) => a.rule.id);
+  }
+
+  it('reports a ring scan for an actual ring', () => {
+    expect(active(SAA_RING)).toContain('mining-ring-scan');
+  });
+
+  it('says nothing about rings after DSS-ing a planet', () => {
+    // Reported from the game. SAASignalsFound fires for every detailed surface
+    // scan: 198 in the corpus, only 29 of them rings, so the bare event name was
+    // wrong 85% of the time and the overlay claimed hotspots on a planet.
+    expect(active(SAA_PLANET)).not.toContain('mining-ring-scan');
+  });
+
+  it('still says nothing for a planet that has a surface mining site', () => {
+    // The near-miss case. These carry $PlanetaryMiningLocation_Name; and are
+    // genuinely mining-related, but they are not rings and have no hotspots.
+    expect(active(SAA_PLANET_MINING)).not.toContain('mining-ring-scan');
   });
 });

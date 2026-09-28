@@ -206,6 +206,32 @@ and are wired up. The trader rules deep-link
 `Engineering Materials#Material Traders` rather than the top of the page, since one
 page covers all three kinds; page *and* section existence are both asserted by test.
 
+## An event name is not a description of when it fires
+
+Twice now a rule has been keyed on an event whose name reads like one situation
+while the game fires it for a superset.
+
+| Event | Sounds like | Actually fires for |
+|---|---|---|
+| `ApproachSettlement` | arriving at a settlement | settlements **and Guardian ruins** |
+| `SAASignalsFound` | ring hotspot scan | **every** detailed surface scan |
+
+`SAASignalsFound` was the worse of the two: 198 events in the corpus, of which only
+**29 are rings**. The rule was wrong 85% of the time, and the overlay announced
+"Ring scanned — hotspot signals found" after a DSS of a planet.
+
+`BodyName` ending in `Ring` separates them exactly — 29 of 29, no false positives.
+A structural test on the payload looked more principled and is in fact worse: ring
+signals are bare commodity names (`Serendibite`) while planet signals are
+`$SAA_SignalType_*;` tokens, but planets with surface mining sites report
+`$PlanetaryMiningLocation_Name;`, which that test misclassified 11 times.
+
+The lesson is the same one the `engineer` service token taught: **count how often the
+trigger fires for something other than the situation you mean.** Unit tests cannot
+find this, because a fixture is chosen by the person who already believes the rule is
+right. `packages/context/test/corpus.test.ts` now replays the real journals through
+the bundled rules and asserts the ring rule matches rings and nothing else.
+
 ## A context has to be able to end
 
 The commander knows what they just did. What deserves the screen is what is true

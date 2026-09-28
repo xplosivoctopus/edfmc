@@ -1,0 +1,101 @@
+/**
+ * Context rules evaluated against the real journal corpus.
+ *
+ * Unit tests use fixtures chosen to exercise a rule, which means they confirm what
+ * the author already believed. This replays everything the game actually wrote, and
+ * is where rules that fire on a *superset* of what their name suggests get caught.
+ *
+ * Skips automatically on machines without a journal directory. Journals are never
+ * committed: they contain commander identity, travel history and finances (§21).
+ */
+
+import { describe, expect, it } from 'vitest';
+import { existsSync } from 'node:fs';
+import { join } from 'node:path';
+
+import { applyEvent, initialState, listJournalFiles, replayFile } from '@edfm/elite-journal';
+// Registers the Node filesystem adapter. The engine is host-agnostic so the same
+// pipeline runs under Tauri; under Node the adapter has to be imported explicitly.
+import '@edfm/elite-journal/node';
+
+import { BUNDLED_RULES } from '../src/defaults.js';
+import { evaluate } from '../src/evaluate.js';
+
+const home = process.env['USERPROFILE'] ?? process.env['HOME'] ?? '';
+const DIR =
+  process.env['EDFM_JOURNAL_DIR'] ??
+  join(home, 'Saved Games', 'Frontier Developments', 'Elite Dangerous');
+
+const available = home !== '' && existsSync(DIR);
+const suite = available ? describe : describe.skip;
+
+suite('bundled rules against the real corpus', () => {
+  it('fires the ring-scan rule for rings and nothing else', async () => {
+    // The regression. SAASignalsFound fires for every detailed surface scan, so a
+    // rule keyed on the event name announced "Ring scanned -- hotspot signals
+    // found" after DSS-ing a planet. Measured 198 events, 29 of them rings.
+    const rule = BUNDLED_RULES.rules.find((r) => r.id === 'mining-ring-scan');
+    expect(rule).toBeDefined();
+
+    const files = await listJournalFiles(DIR);
+    const state = initialState();
+
+    let rings = 0;
+    let planets = 0;
+    const wrong: string[] = [];
+
+    for (const f of files.filter((x) => x.sizeBytes > 0)) {
+      const result = await replayFile(f.fullPath);
+      for (const event of result.events) {
+        if (event.source.event !== 'SAASignalsFound') continue;
+
+        const raw = event.source.raw as Record<string, unknown>;
+        const body = String(raw['BodyName'] ?? '');
+        const isRing = body.endsWith('Ring');
+        if (isRing) rings += 1;
+        else planets += 1;
+
+        const matched = evaluate(rule!.when, { event, state });
+        if (matched !== isRing) wrong.push(`${body} -> matched=${matched}, isRing=${isRing}`);
+      }
+    }
+
+    if (rings + planets === 0) return; // this commander has never run a DSS
+
+    expect(wrong, `misclassified:\n${wrong.slice(0, 10).join('\n')}`).toHaveLength(0);
+    // Both kinds must be present, or the test proves nothing about discrimination.
+    expect(rings).toBeGreaterThan(0);
+    expect(planets).toBeGreaterThan(0);
+  });
+
+  it('never fires a station rule while the commander is not docked', async () => {
+    // State-scoped station rules are held open by stationServices, which is cleared
+    // on undock. A rule that survived leaving a station would advertise facilities
+    // light-years away -- this has happened once already, with Fleet Carriers.
+    const stationRules = BUNDLED_RULES.rules.filter((r) => r.id.startsWith('station-'));
+    expect(stationRules.length).toBeGreaterThan(0);
+
+    const files = await listJournalFiles(DIR);
+    const state = initialState();
+    let checked = 0;
+
+    // Only the most recent journals: this walks every event through every rule.
+    for (const f of files.filter((x) => x.sizeBytes > 0).slice(-5)) {
+      const result = await replayFile(f.fullPath);
+      for (const event of result.events) {
+        applyEvent(state, event);
+        if (state.docking === 'docked') continue;
+
+        for (const rule of stationRules) {
+          expect(
+            evaluate(rule.when, { event, state }),
+            `${rule.id} matched while not docked, after ${event.source.event}`,
+          ).toBe(false);
+        }
+        checked += 1;
+      }
+    }
+
+    expect(checked).toBeGreaterThan(0);
+  });
+});
