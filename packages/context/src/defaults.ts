@@ -353,7 +353,7 @@ export const BUNDLED_RULES: ContextRuleSet = {
     {
       id: 'planet-biological-signals',
       title: 'Biological signals',
-      subtitle: 'This body has exobiology to find',
+      subtitle: 'Exobiology detected on this body',
       when: {
         kind: 'all',
         of: [
@@ -380,8 +380,8 @@ export const BUNDLED_RULES: ContextRuleSet = {
     },
     {
       id: 'planet-surface-mining',
-      title: 'Surface mining site',
-      subtitle: 'Materials can be mined on this body',
+      title: 'Surface mining available',
+      subtitle: 'Mineable surface materials detected',
       when: {
         kind: 'all',
         of: [

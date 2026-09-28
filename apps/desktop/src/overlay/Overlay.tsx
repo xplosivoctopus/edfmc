@@ -248,11 +248,9 @@ export default function Overlay() {
               {state.jumpTarget && (
                 <Row
                   label="Next jump"
-                  value={
-                    state.remainingJumps !== null
-                      ? `${state.jumpTarget} · ${state.remainingJumps} left`
-                      : state.jumpTarget
-                  }
+                  value={state.jumpTarget}
+                  nav
+                  meta={state.remainingJumps !== null ? `${state.remainingJumps} left` : null}
                 />
               )}
 
@@ -285,10 +283,13 @@ export default function Overlay() {
                     <ul className="context-also">
                       {(state.alsoActive ?? []).map((c) => (
                         <li key={c.title}>
-                          <span className="context-also-title">{c.title}</span>
-                          {c.subtitle && (
-                            <span className="context-also-sub"> — {c.subtitle}</span>
-                          )}
+                          <span className="context-also-title">
+                            <span className="context-also-mark" aria-hidden="true">
+                              &#9670;
+                            </span>
+                            {c.title}
+                          </span>
+                          {c.subtitle && <span className="context-also-sub">{c.subtitle}</span>}
                         </li>
                       ))}
                     </ul>
@@ -464,13 +465,35 @@ function MissionsWidget({ missions }: { missions: OverlayMissions }) {
   );
 }
 
-function Row({ label, value }: { label: string; value: string | null }) {
+function Row({
+  label,
+  value,
+  meta,
+  nav,
+}: {
+  label: string;
+  value: string | null;
+  /** Subordinate detail after the value, e.g. "3 left". */
+  meta?: string | null;
+  /** Marks a row that describes where the commander is *going*, not where they are. */
+  nav?: boolean;
+}) {
   return (
-    <div className="row">
+    <div className={nav ? 'row row-nav' : 'row'}>
       <span className="row-label">{label}</span>
       {/* Unknown stays visibly Unknown here too — the overlay must not imply
           knowledge the journal did not provide. */}
-      <span className={value ? 'row-value' : 'row-value unknown'}>{value ?? 'Unknown'}</span>
+      <span className={value ? 'row-value' : 'row-value unknown'}>
+        {/* A glyph as well as a colour: the distinction must survive a display
+            where the accent is hard to pick out. */}
+        {nav && value && (
+          <span className="row-nav-glyph" aria-hidden="true">
+            &#9656;
+          </span>
+        )}
+        {value ?? 'Unknown'}
+        {meta && <span className="row-meta">{meta}</span>}
+      </span>
     </div>
   );
 }
