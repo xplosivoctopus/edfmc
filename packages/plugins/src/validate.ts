@@ -11,15 +11,20 @@
 import { sanitise, type ContextRule, type ContextRuleSet } from '@edfm/context';
 import type { ResearchProject } from '@edfm/research';
 import {
+  COMPANION_VERSION_FOR_PLUGINS,
   FORBIDDEN_OBSERVATION_EVENTS,
+  MINIMUM_MANIFEST_VERSION,
   PLUGIN_LIMITS,
   SUPPORTED_MANIFEST_VERSION,
   type LoadedPlugin,
+  type PluginKind,
   type PluginLoadResult,
   type PluginManifest,
   type PluginProblem,
+  type PluginRequirements,
   type RejectedPlugin,
 } from './types.js';
+import { checkCompatibility } from './compat.js';
 
 /** Raw file as read from disk. Parsing happens here, not in the reader. */
 export interface RawPlugin {
@@ -65,12 +70,22 @@ function validateManifest(raw: unknown): { manifest: PluginManifest } | { proble
   }
   const m = raw as Record<string, unknown>;
 
-  if (m.manifestVersion !== SUPPORTED_MANIFEST_VERSION) {
+  // A range rather than one value, because v1 manifests keep loading
+  // indefinitely: an author should upgrade to *declare* things, not to keep
+  // working. Out-of-range versions are reported by checkCompatibility, which can
+  // say whether the fix is updating the app or the plugin.
+  const declaredVersion = m.manifestVersion;
+  if (
+    typeof declaredVersion !== 'number' ||
+    !Number.isInteger(declaredVersion) ||
+    declaredVersion < MINIMUM_MANIFEST_VERSION
+  ) {
     problems.push({
       severity: 'error',
       message:
-        `Manifest version ${String(m.manifestVersion)} is not supported ` +
-        `(this build understands ${SUPPORTED_MANIFEST_VERSION}).`,
+        `Manifest version ${String(declaredVersion)} is not a supported manifest ` +
+        `version (this build understands ${MINIMUM_MANIFEST_VERSION} to ` +
+        `${SUPPORTED_MANIFEST_VERSION}).`,
     });
   }
 
@@ -96,11 +111,47 @@ function validateManifest(raw: unknown): { manifest: PluginManifest } | { proble
     problems.push({ severity: 'error', message: 'Plugin has no "contributes" section.' });
   }
 
+  // Declared tier. Absent means community-pack, which is every v1 manifest.
+  let kind: PluginKind | undefined;
+  if (m.kind !== undefined) {
+    if (typeof m.kind !== 'string') {
+      problems.push({ severity: 'error', message: '"kind" must be a string.' });
+    } else {
+      kind = m.kind as PluginKind;
+    }
+  }
+
+  // Requirements are validated for *shape* here; whether they are satisfied is
+  // checkCompatibility's job, so a plugin that simply needs a newer build is not
+  // confused with one whose manifest is malformed.
+  let requires: PluginRequirements | undefined;
+  if (m.requires !== undefined) {
+    if (m.requires === null || typeof m.requires !== 'object' || Array.isArray(m.requires)) {
+      problems.push({ severity: 'error', message: '"requires" must be an object.' });
+    } else {
+      const r = m.requires as Record<string, unknown>;
+      const out: { edfmCompanion?: string; pluginApi?: string } = {};
+      for (const key of ['edfmCompanion', 'pluginApi'] as const) {
+        const value = r[key];
+        if (value === undefined) continue;
+        const range = text(value, PLUGIN_LIMITS.maxRequirementChars);
+        if (range === null) {
+          problems.push({ severity: 'error', message: `"requires.${key}" must be a version range.` });
+        } else {
+          out[key] = range;
+        }
+      }
+      requires = out;
+    }
+  }
+
   if (problems.length > 0) return { problems };
 
   return {
     manifest: {
-      manifestVersion: SUPPORTED_MANIFEST_VERSION,
+      manifestVersion: declaredVersion as number,
+      ...(kind === undefined ? {} : { kind }),
+      ...(requires === undefined ? {} : { requires }),
       id: id!,
       name: name!,
       version: version!,
@@ -215,7 +266,15 @@ function validateResearchProjects(
  * Returns either a loaded plugin or a rejection. Never throws: a plugin that
  * crashes the loader would be a plugin that crashes the application.
  */
-export function validatePlugin(raw: RawPlugin): LoadedPlugin | RejectedPlugin {
+export interface LoadOptions {
+  /** Defaults to this build's version; injected so tests can pin it. */
+  readonly companionVersion?: string;
+}
+
+export function validatePlugin(
+  raw: RawPlugin,
+  options: LoadOptions = {},
+): LoadedPlugin | RejectedPlugin {
   if (raw.json.length > PLUGIN_LIMITS.maxManifestBytes) {
     return {
       directory: raw.directory,
@@ -236,6 +295,21 @@ export function validatePlugin(raw: RawPlugin): LoadedPlugin | RejectedPlugin {
   }
 
   const checked = validateManifest(parsed);
+  if (!('problems' in checked)) {
+    // Decided before anything is activated. A pack that needs a newer build must
+    // say so rather than loading and behaving oddly -- which is the failure the
+    // commander would otherwise blame on the app.
+    const compat = checkCompatibility(checked.manifest, {
+      companionVersion: options.companionVersion ?? COMPANION_VERSION_FOR_PLUGINS,
+    });
+    if (!compat.ok) {
+      return {
+        directory: raw.directory,
+        id: checked.manifest.id,
+        problems: [{ severity: 'error', message: compat.reason }],
+      };
+    }
+  }
   if ('problems' in checked) {
     const id = typeof (parsed as { id?: unknown })?.id === 'string' ? (parsed as { id: string }).id : null;
     return { directory: raw.directory, id, problems: checked.problems };
@@ -279,13 +353,16 @@ export function validatePlugin(raw: RawPlugin): LoadedPlugin | RejectedPlugin {
 }
 
 /** Validate every plugin found on disk, keeping the good ones. */
-export function loadPlugins(raws: readonly RawPlugin[]): PluginLoadResult {
+export function loadPlugins(
+  raws: readonly RawPlugin[],
+  options: LoadOptions = {},
+): PluginLoadResult {
   const loaded: LoadedPlugin[] = [];
   const rejected: RejectedPlugin[] = [];
   const seen = new Set<string>();
 
   for (const raw of raws.slice(0, PLUGIN_LIMITS.maxPlugins)) {
-    const result = validatePlugin(raw);
+    const result = validatePlugin(raw, options);
 
     if ('problems' in result) {
       rejected.push(result);

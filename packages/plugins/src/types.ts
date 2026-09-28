@@ -20,8 +20,68 @@
 import type { ContextRule } from '@edfm/context';
 import type { ResearchProject } from '@edfm/research';
 
-/** Bumped when the manifest shape changes incompatibly. */
-export const SUPPORTED_MANIFEST_VERSION = 1;
+/**
+ * The published extension contract.
+ *
+ * Deliberately NOT the internal types. `ContextRule`, `CommanderState` and
+ * `Companion` are implementation and change freely; these five numbers are what a
+ * plugin author may rely on, and each moves independently so a change to one does
+ * not invalidate manifests that never used it.
+ *
+ * See docs/EXTENSIONS.md.
+ */
+export const EXTENSION_API = {
+  /** Package shape: ids, versions, `requires`, contributions. */
+  manifest: 2,
+  /** Normalised events (`player.docked`, ...). Reserved; not yet exposed. */
+  journalSemantic: 1,
+  /** Read-only projected commander knowledge. Reserved; not yet exposed. */
+  knowledge: 1,
+  /** Overlay widget schema. Reserved; not yet exposed. */
+  overlay: 1,
+  /** Declarative settings schema. Reserved; not yet exposed. */
+  settings: 1,
+} as const;
+
+/** Highest manifest version this build understands. */
+export const SUPPORTED_MANIFEST_VERSION = EXTENSION_API.manifest;
+
+/** Lowest still accepted. v1 keeps loading indefinitely; see docs/EXTENSIONS.md §9. */
+export const MINIMUM_MANIFEST_VERSION = 1;
+
+/**
+ * This build's own version, compared against a manifest's `requires`.
+ *
+ * Read from the desktop app rather than duplicated, so the two cannot disagree
+ * about what a commander is running.
+ */
+export const COMPANION_VERSION_FOR_PLUGINS = '0.1.0';
+
+/**
+ * What a plugin *is*, declared rather than inferred.
+ *
+ * Only `community-pack` exists. The others are named now so that a manifest
+ * claiming one fails closed with an explanation instead of loading as data and
+ * quietly doing less than its author intended -- which is the failure mode that
+ * makes people distrust a plugin system.
+ */
+export type PluginKind = 'community-pack' | 'capability' | 'advanced';
+
+export const SUPPORTED_PLUGIN_KINDS: readonly PluginKind[] = ['community-pack'];
+
+/**
+ * A version requirement, in the small subset of semver ranges worth supporting.
+ *
+ * `^1.2`, `~1.2.3`, `>=0.3.0 <1.0.0`, `1.2.3`, `*`. No unions, no pre-release
+ * precedence rules, no build metadata. A manifest is configuration, and a range
+ * grammar nobody can predict the behaviour of is worse than a narrow one.
+ */
+export interface PluginRequirements {
+  /** Range against the Companion's own version. */
+  readonly edfmCompanion?: string;
+  /** Range against `EXTENSION_API.manifest`, expressed as `<major>.<minor>`. */
+  readonly pluginApi?: string;
+}
 
 export interface PluginManifest {
   readonly manifestVersion: number;
@@ -50,6 +110,19 @@ export interface PluginManifest {
    * itself as part of the application.
    */
   readonly instructions?: string;
+  /**
+   * Which tier this plugin belongs to. Absent means `community-pack`, which is
+   * what every v1 manifest is.
+   */
+  readonly kind?: PluginKind;
+  /**
+   * What this plugin needs in order to work.
+   *
+   * Checked before activation. A pack that needs something this build cannot
+   * provide is reported as incompatible with the reason, rather than loading and
+   * behaving oddly.
+   */
+  readonly requires?: PluginRequirements;
   readonly contributes: PluginContributions;
 }
 
@@ -107,6 +180,8 @@ export const PLUGIN_LIMITS = {
   /** Instructions are read, not scrolled through forever. */
   maxInstructionsChars: 4000,
   maxReadmeChars: 20_000,
+  /** A requirement string is a range, not an essay. */
+  maxRequirementChars: 64,
 } as const;
 
 /**

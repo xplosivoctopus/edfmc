@@ -68,6 +68,30 @@ pub struct PluginScan {
 /// `user-dirs.dirs` entry pointing at a removed drive, or a permissions problem
 /// all produce a path that exists on paper and fails on use. So the check is a
 /// real write.
+/// Ceilings matching @edfm/plugins PLUGIN_LIMITS, enforced *here*.
+///
+/// The TypeScript validator has always checked manifest size, but it could only
+/// check it after this function had already read the whole file into memory. A
+/// two-gigabyte plugin.json was therefore an allocation, not a rejection. A limit
+/// only binds in the layer that does the reading.
+///
+/// Slightly above the validator's limits on purpose: this is the crude "do not
+/// read absurd files" guard, and the precise limit, with the message an author
+/// can act on, stays in one place over there.
+const MAX_MANIFEST_BYTES: u64 = 1024 * 1024;
+const MAX_README_BYTES: u64 = 256 * 1024;
+
+/// Read a file, refusing before allocating if it is larger than `max`.
+fn read_bounded(path: &Path, max: u64) -> Result<String, String> {
+    let size = fs::metadata(path).map_err(|e| e.to_string())?.len();
+    if size > max {
+        return Err(format!(
+            "File is {size} bytes, over the {max}-byte limit for this file; refusing to read it."
+        ));
+    }
+    fs::read_to_string(path).map_err(|e| e.to_string())
+}
+
 fn usable(dir: &Path) -> Result<(), String> {
     if let Err(e) = fs::create_dir_all(dir) {
         return Err(format!("could not create it ({e})"));
@@ -219,12 +243,12 @@ pub fn plugins_read(app: tauri::AppHandle) -> PluginScan {
             continue;
         }
 
-        match fs::read_to_string(&manifest) {
+        match read_bounded(&manifest, MAX_MANIFEST_BYTES) {
             Ok(json) => {
                 // Missing or unreadable is simply "no readme": an author who
                 // wrote no instructions is not an error, and one whose readme
                 // is a cloud placeholder should still get their plugin loaded.
-                let readme = fs::read_to_string(entry.path().join("README.md")).ok();
+                let readme = read_bounded(&entry.path().join("README.md"), MAX_README_BYTES).ok();
                 plugins.push(RawPlugin {
                     directory: name,
                     json,
@@ -362,6 +386,31 @@ mod tests {
         assert!(usable(&dir).is_ok());
         assert!(usable(&dir).is_ok());
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn read_bounded_refuses_a_file_over_the_limit_without_reading_it() {
+        // The point of the limit: a plugin.json larger than the ceiling must be
+        // refused rather than allocated. The TypeScript validator could only ever
+        // check this after the whole file was already in memory.
+        let dir = temp("bounded");
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("big.json");
+        fs::write(&path, vec![b'x'; 4096]).unwrap();
+
+        let err = read_bounded(&path, 1024).unwrap_err();
+        assert!(err.contains("4096"), "message should name the size: {err}");
+        assert!(err.contains("refusing"), "message should say what it did: {err}");
+
+        // The same file is fine under a limit that permits it.
+        assert_eq!(read_bounded(&path, 8192).unwrap().len(), 4096);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn read_bounded_reports_a_missing_file_rather_than_panicking() {
+        let missing = temp("bounded-missing").join("nope.json");
+        assert!(read_bounded(&missing, 1024).is_err());
     }
 
     #[test]

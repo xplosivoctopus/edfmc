@@ -168,6 +168,54 @@ An empty array is false for every operator, `exists` included — "the array had
 nothing to offer" is not "there is something". At most two `*` per path, and at most
 64 values are gathered, so a path cannot buy unbounded work.
 
+### Declaring what your pack needs
+
+A plugin today is a **Community Pack**: data only, incapable of running code, and
+safe to install on that basis rather than on trust. `docs/EXTENSIONS.md` describes
+the tiers planned above it.
+
+Manifest version 2 adds two optional fields:
+
+```json
+{
+  "manifestVersion": 2,
+  "kind": "community-pack",
+  "requires": {
+    "edfmCompanion": ">=0.1.0 <1.0.0",
+    "pluginApi": "^2.0"
+  }
+}
+```
+
+**`manifestVersion: 1` still works and will keep working.** Nothing was removed.
+You upgrade to *declare* things, not to keep functioning.
+
+`requires` is checked before your pack is activated, and a mismatch is shown with
+the reason — so a commander running an older build is told to update the app
+rather than watching your pack do nothing.
+
+Ranges support exactly five forms, and **anything else is a manifest error**
+rather than a range that quietly matches everything:
+
+| Form | Meaning |
+|---|---|
+| `*` | any version |
+| `1.2.3` | exactly that |
+| `^1.2.3` | up to the next breaking release |
+| `~1.2.3` | `>=1.2.3 <1.3.0` |
+| `>=0.3.0 <1.0.0` | every comparator must hold |
+
+`^` follows npm's rule that below 1.0.0 the *minor* is the breaking position, so
+`^0.3.1` accepts 0.3.9 and rejects 0.4.0. The Companion is pre-1.0, so this is
+the case that will actually come up.
+
+Pre-release and build metadata (`^1.2.3-beta.1`) are rejected in a range. Accepting
+them would mean silently comparing against `1.2.3` and ignoring what you wrote.
+
+`kind` names the tier. Only `community-pack` runs today; declaring `capability` or
+`advanced` is refused with an explanation rather than loaded as inert data, so you
+never end up believing code is running when it is not.
+
 ### Say what ends your context, not just how long it lasts
 
 `ttlSeconds` is a **fallback**, for when nothing tells us the activity finished.

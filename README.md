@@ -178,6 +178,7 @@ scripts/             Journal profiling tooling
 | [RESEARCH.md](docs/RESEARCH.md) | Research framework, session model, data-quality rules |
 | [LOGISTICS.md](docs/LOGISTICS.md) | Confidence engine, sourcing planner, construction projects |
 | [PLUGINS.md](docs/PLUGINS.md) | Installing and writing plugins, and why they are safe |
+| [EXTENSIONS.md](docs/EXTENSIONS.md) | Extension architecture: tiers, threat model, API boundaries, roadmap |
 | [EDDN.md](docs/EDDN.md) | EDDN ingestion, schemas, normalization decisions |
 | [OVERLAY.md](docs/OVERLAY.md) | Overlay design and the no-injection boundary |
 | [CONTEXT.md](docs/CONTEXT.md) | Context rules and how they are evaluated |
