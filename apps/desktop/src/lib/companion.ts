@@ -9,13 +9,6 @@ import Database from '@tauri-apps/plugin-sql';
 import { invoke } from '@tauri-apps/api/core';
 import {
   JournalEngine,
-  learnCarrier,
-  learnTrader,
-  recordCarrierJump,
-  cancelCarrierJump,
-  confirmCarrierAt,
-  listJournalFiles,
-  replayFile,
   applyEvent,
   initialState,
   resolveJournalDirectory,
@@ -93,6 +86,13 @@ import {
 
 import { logger } from './logger.js';
 import { httpFetch } from './http.js';
+import {
+  backfillCarrierIdentities,
+  backfillCarrierJumps,
+  backfillExobiologyHoldings,
+  backfillTraderIdentities,
+  type BackfillContext,
+} from './backfill.js';
 import { policyFor, projectResources } from './spoiler.js';
 import {
   DEFAULT_WIDGETS,
@@ -1310,52 +1310,44 @@ export class Companion {
     }
   }
 
-  /**
-   * Learn carrier identities from recent journal history.
+
+  /* ------------------------------------------------------------ backfills */
+
+  /*
+   * Recovering state from journals the app was not running for.
    *
-   * Runs only when nothing is remembered yet. Live ingest resumes from a
-   * checkpoint, so a `CarrierStats` written before the app was ever installed
-   * would otherwise never be seen — the name would stay unavailable until the
-   * commander happened to open carrier management again.
-   *
-   * Bounded to the most recent journals and stops as soon as an identity is
-   * found, so this cannot become a 220-file scan on startup (§30). Deliberately
-   * kicked off after the engine is running, so it never delays live ingest.
+   * The routines live in lib/backfill.ts: four variations on one shape, sharing
+   * one hazard worth isolating -- none may go through `applyEvent`, or a
+   * month-old event would be reported as the latest thing that happened. Their
+   * coupling back to here is five things, passed in.
    */
-  private async backfillCarrierIdentities(directory: string, maxFiles = 25): Promise<void> {
-    try {
-      const files = (await listJournalFiles(directory, tauriFs)).filter((f) => f.sizeBytes > 0);
-      const recent = files.slice(-maxFiles).reverse(); // newest first
 
-      for (const file of recent) {
-        const result = await replayFile(file.fullPath, tauriFs);
-        let found = false;
+  private backfillContext(): BackfillContext {
+    return {
+      state: this.state,
+      saveCarrierIdentity: (event) => this.saveCarrierIdentity(event),
+      saveTraderIdentity: (event) => this.saveTraderIdentity(event),
+      changed: () => {
+        this.notify();
+        if (this.overlayEnabled) this.pushOverlayState();
+      },
+    };
+  }
 
-        for (const event of result.events) {
-          if (event.kind !== 'carrier-identity') continue;
-          const d = event.data as { carrierId: unknown; name: unknown };
-          if (typeof d.carrierId !== 'number' || typeof d.name !== 'string') continue;
-          // learnCarrier rather than applyEvent: these are historical events, and
-          // replaying them through the reducer would make the dashboard report
-          // stale activity as the latest thing that happened.
-          learnCarrier(this.state, d.carrierId, d.name);
-          await this.saveCarrierIdentity(event);
-          found = true;
-        }
+  private backfillCarrierIdentities(directory: string): Promise<void> {
+    return backfillCarrierIdentities(this.backfillContext(), directory);
+  }
 
-        if (found) {
-          logger.info('journal', 'Learned carrier identities from history', {
-            file: file.fileName,
-          });
-          // Re-resolve: we may already be docked at a carrier we just learned about.
-          this.notify();
-          if (this.overlayEnabled) this.pushOverlayState();
-          return;
-        }
-      }
-    } catch (err) {
-      logger.warn('journal', 'Carrier identity backfill failed', { error: String(err) });
-    }
+  private backfillTraderIdentities(directory: string): Promise<void> {
+    return backfillTraderIdentities(this.backfillContext(), directory);
+  }
+
+  private backfillCarrierJumps(directory: string): Promise<void> {
+    return backfillCarrierJumps(this.backfillContext(), directory);
+  }
+
+  private backfillExobiologyHoldings(directory: string): Promise<void> {
+    return backfillExobiologyHoldings(this.backfillContext(), directory);
   }
 
   /* --------------------------------------------------- trader identities */
@@ -1403,161 +1395,10 @@ export class Companion {
     }
   }
 
-  /**
-   * Recover trader kinds from historical journals.
-   *
-   * Unlike the carrier backfill this does **not** stop at the first file that
-   * yields something. Each station's kind was revealed by whenever the commander
-   * happened to trade there, so the answers are scattered across the whole
-   * history rather than concentrated in the newest file -- in the corpus this was
-   * measured at 29 distinct stations across 246 MaterialTrade events.
-   *
-   * Oldest file first, so if a station ever does report a different kind the most
-   * recent observation is the one that survives.
-   */
-  private async backfillTraderIdentities(directory: string, maxFiles = 200): Promise<void> {
-    try {
-      const files = (await listJournalFiles(directory, tauriFs)).filter((f) => f.sizeBytes > 0);
-      const scan = files.slice(-maxFiles); // oldest -> newest
-      let learned = 0;
 
-      for (const file of scan) {
-        const result = await replayFile(file.fullPath, tauriFs);
-        for (const event of result.events) {
-          if (event.kind !== 'trader-identity') continue;
-          const d = event.data as { marketId: unknown; traderType: unknown };
-          if (typeof d.marketId !== 'number' || typeof d.traderType !== 'string') continue;
-          // learnTrader rather than applyEvent, for the same reason as carriers:
-          // these are historical events and must not overwrite lastEvent*.
-          learnTrader(this.state, d.marketId, d.traderType);
-          await this.saveTraderIdentity(event);
-          learned += 1;
-        }
-      }
-
-      if (learned > 0) {
-        logger.info('journal', 'Learned material trader kinds from history', {
-          trades: learned,
-          stations: Object.keys(this.state.knownTraders).length,
-        });
-        // Re-resolve: we may already be docked at a trader we just identified.
-        this.notify();
-        if (this.overlayEnabled) this.pushOverlayState();
-      }
-    } catch (err) {
-      logger.warn('journal', 'Material trader backfill failed', { error: String(err) });
-    }
-  }
-
-  /**
-   * Recover a pending carrier jump from recent journals.
-   *
-   * Oldest file first, applying the same three mutations the live reducer uses, so
-   * supersede / cancel / arrival all resolve exactly as they would have live rather
-   * than being re-derived here and drifting.
-   *
-   * Bounded to recent files: the countdown is about a quarter of an hour, and this
-   * drops anything already past by more than that on the way out.
-   */
-  private async backfillCarrierJumps(directory: string, maxFiles = 10): Promise<void> {
-    try {
-      const files = (await listJournalFiles(directory, tauriFs)).filter((f) => f.sizeBytes > 0);
-
-      for (const file of files.slice(-maxFiles)) {
-        const result = await replayFile(file.fullPath, tauriFs);
-        for (const event of result.events) {
-          const d = event.data as { carrierId?: unknown; starSystem?: unknown };
-          switch (event.kind) {
-            case 'carrier-jump-request':
-              recordCarrierJump(this.state, event.data, event.source.provenance.timestamp);
-              break;
-            case 'carrier-jump-cancelled':
-              if (typeof d.carrierId === 'number') cancelCarrierJump(this.state, d.carrierId);
-              break;
-            case 'carrier-location':
-              if (typeof d.carrierId === 'number' && typeof d.starSystem === 'string') {
-                confirmCarrierAt(this.state, d.carrierId, d.starSystem);
-              }
-              break;
-            default:
-              break;
-          }
-        }
-      }
-
-      // Anything whose departure has already passed is history, not a countdown.
-      // Dropped here rather than displayed as "departing" from a stale journal.
-      const now = Date.now();
-      for (const [id, jump] of Object.entries(this.state.carrierJumps)) {
-        if (Date.parse(jump.departureTime) < now) delete this.state.carrierJumps[Number(id)];
-      }
-
-      const pending = Object.keys(this.state.carrierJumps).length;
-      if (pending > 0) {
-        logger.info('journal', 'Recovered a scheduled carrier jump from history', { pending });
-        this.notify();
-        if (this.overlayEnabled) this.pushOverlayState();
-      }
-    } catch (err) {
-      logger.warn('journal', 'Carrier jump backfill failed', { error: String(err) });
-    }
-  }
 
   /* ------------------------------------------------ exobiology holdings */
 
-  /**
-   * Recover the confirmed-unsold exobiology count from recent journals.
-   *
-   * Without this the count starts at zero on every launch, so a commander who
-   * scanned yesterday would be told nothing at Vista Genomics today -- which is the
-   * same unhelpfulness as the ungated rule, in the other direction.
-   *
-   * Cheaply bounded: the count only depends on events *since* the most recent sale
-   * or death, so this walks backwards and stops at the first one it finds. If no
-   * reset appears within `maxFiles`, the result is an undercount, which is the
-   * correct direction for a figure documented as a lower bound.
-   *
-   * Runs after live ingest has started, so it must not clobber what live events
-   * have already established -- it takes the larger of the two.
-   */
-  private async backfillExobiologyHoldings(directory: string, maxFiles = 25): Promise<void> {
-    try {
-      const files = (await listJournalFiles(directory, tauriFs)).filter((f) => f.sizeBytes > 0);
-      const recent = files.slice(-maxFiles);
-
-      let analysed = 0;
-      // Newest file first, and within a file walk events in reverse, so the first
-      // reset encountered is genuinely the most recent one.
-      for (let i = recent.length - 1; i >= 0; i -= 1) {
-        const result = await replayFile(recent[i]!.fullPath, tauriFs);
-        let hitReset = false;
-
-        for (let j = result.events.length - 1; j >= 0; j -= 1) {
-          const event = result.events[j]!;
-          if (event.kind === 'organic-sold' || event.kind === 'died') {
-            hitReset = true;
-            break;
-          }
-          if (event.kind !== 'organic-scan') continue;
-          const d = event.data as { scanType: unknown };
-          if (d.scanType === 'Analyse') analysed += 1;
-        }
-
-        if (hitReset) break;
-      }
-
-      if (analysed > this.state.exobiologyToSell) {
-        this.state.exobiologyToSell = analysed;
-        logger.info('journal', 'Recovered unsold exobiology count from history', {
-          confirmedUnsold: analysed,
-        });
-        this.notify();
-        if (this.overlayEnabled) this.pushOverlayState();
-      }
-    } catch (err) {
-      logger.warn('journal', 'Exobiology holdings backfill failed', { error: String(err) });
-    }
-  }
 
   /* -------------------------------------------------------- reference data */
 

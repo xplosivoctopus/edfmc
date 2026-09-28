@@ -330,3 +330,80 @@ filesystem permission, so a renderer compromise cannot reach arbitrary user file
 - **EDFM MediaWiki:** `https://edfieldmanual.com/`, MediaWiki **1.46.0**, `api.php` at
   root, `articlepath = /wiki/$1`. Use the API for search/metadata/canonical URLs; do
   not scrape rendered HTML.
+
+## The `Companion` application service
+
+`apps/desktop/src/lib/companion.ts` coordinates journal ingestion, commander
+state, contexts, missions, verification, discovery, reference data, submission
+queues, research, logistics, plugins, overlay state, SQLite persistence and
+contribution statistics. It was 2,237 lines with 78 private fields.
+
+That is worth being honest about rather than defending. It is also worth being
+honest about what is and is not wrong with it.
+
+### What is actually wrong
+
+**Not much cohesion, in one specific sense.** The class has fourteen section
+banners the author wrote by hand. Those are seams — they mark boundaries that
+already exist conceptually and simply are not expressed in the module system.
+Code that needs comment-drawn dividers to be navigable has outgrown one file.
+
+**One real coupling hazard, now removed.** The four journal-history backfills
+shared a subtle invariant: none may go through `applyEvent`, because the reducer
+maintains "what just happened" and replaying a month-old event through it makes
+the dashboard report stale activity as the latest thing the commander did. That
+rule lived in four separate comments in four separate methods. A fifth backfill
+written by someone who had not read all four would get it wrong, and the symptom
+would be a confusing UI rather than a crash.
+
+**Snapshot invalidation is the genuine architectural risk.** `snapshot()` must
+return a referentially stable object or `useSyncExternalStore` aborts the render
+tree — this has already shipped as a startup crash once. Every subsystem that
+mutates state must route through `notify()`, and nothing in the type system
+enforces it. Any extraction must preserve that, which is why
+`apps/desktop/test/companion.test.ts` asserts identity with `toBe`.
+
+### What is not wrong
+
+**Size alone.** A 2,000-line class that is navigable, commented and tested is not
+automatically a problem, and churning it into eight files for tidiness would move
+regression risk around rather than reduce it.
+
+**The seams that already work.** Journal parsing, context rules, missions,
+verification, research, logistics and plugins are all *already* separate
+packages with their own tests. `Companion` is the wiring between them and the
+host, not a monolith that swallowed them. Much of its length is the wiring
+being explicit rather than clever.
+
+### What was extracted, and why that one
+
+`lib/backfill.ts` — the four history-recovery routines. Chosen by measurement:
+they touch only five things outside themselves (commander state, two persistence
+callbacks, and a "something changed" signal), which is the narrowest coupling of
+any candidate group, and they share the one invariant most likely to be broken
+by someone adding a fifth. 152 lines moved; behaviour unchanged; the full suite
+was green before and after.
+
+### What to extract next, in order
+
+Ranked by coupling measured against the rest of the class, not by size:
+
+1. **Plugins** (~110 lines). Reads from disk, validates, merges rules into the
+   resolver. Depends on one setting and one resolver call.
+2. **Logistics** (~175 lines). Owns its own state and persistence; touches the
+   rest mainly to notify.
+3. **Research** (~90 lines). Same shape, smaller.
+4. **Reference data and the submission queue.** Higher value but higher risk:
+   they are the pieces gated on consent, and the gate is checked at call time
+   precisely so revoking it takes effect immediately. Any extraction must keep
+   that property, and it is the one most costly to get wrong.
+
+Missions, discovery and overlay state are *not* recommended for extraction:
+they read and write commander state closely enough that a boundary would mean
+passing most of it across, which is coupling relabelled rather than removed.
+
+### The constraint any refactor must preserve
+
+The React-facing store exposes exactly one thing: a referentially stable
+snapshot. Whatever moves, that contract does not, and a regression in it is a
+white screen rather than a subtle bug.
