@@ -108,6 +108,12 @@ const SAA_PLANET_MINING =
 const SAA_PLANET_BIO_AND_MINING =
   '{ "timestamp":"2026-07-11T04:00:00Z", "event":"SAASignalsFound", "BodyName":"Wregoe KO-G c24-7 16 a", "SystemAddress":2833504080594, "BodyID":21, "Signals":[ { "Type":"$SAA_SignalType_Biological;", "Type_Localised":"Biological", "Count":3 }, { "Type":"$PlanetaryMiningLocation_Name;", "Count":1 } ], "Genuses":[ { "Genus":"$Codex_Ent_Brancae_Name;", "Genus_Localised":"Brain Trees" } ] }';
 
+const LIFTOFF =
+  '{ "timestamp":"2026-09-18T03:05:00Z", "event":"Liftoff", "PlayerControlled":true, "Taxi":false, "Multicrew":false, "StarSystem":"Wregoe KO-G c24-10", "SystemAddress":2833504080594, "Body":"Wregoe KO-G c24-10 A 5", "BodyID":12, "OnStation":false, "OnPlanet":true, "Latitude":-14.2, "Longitude":83.1, "NearestDestination":"" }';
+
+const EMBARK_SHIP =
+  '{ "timestamp":"2026-09-18T03:04:00Z", "event":"Embark", "SRV":false, "Taxi":false, "Multicrew":false, "ID":1, "StarSystem":"Wregoe KO-G c24-10", "SystemAddress":2833504080594, "Body":"Wregoe KO-G c24-10 A 5", "BodyID":12, "OnStation":false, "OnPlanet":true }';
+
 const INTERDICTED =
   '{ "timestamp":"2026-09-18T06:00:00Z", "event":"Interdicted", "Submitted":false, "Interdictor":"Cory Reynolds", "IsPlayer":false, "Faction":"Sirius Special Forces", "Power":"Li Yong-Rui" }';
 
@@ -1059,5 +1065,55 @@ describe('rendered text reaches the active context', () => {
     const ctx = r.current().find((a) => a.rule.id === 'mining-ring-scan');
     expect(ctx!.title).toBe('Ring scanned');
     expect(ctx!.subtitle).toBe('Hotspot signals found');
+  });
+});
+
+describe('an exobiology run survives the trip between patches', () => {
+  function resolver() {
+    return new ContextResolver(BUNDLED_RULES, { now: () => 1000, maxActive: 5 });
+  }
+
+  it('keeps sampling context when the commander boards the ship', () => {
+    // Reported from the game: the context vanished on entering the ship.
+    const r = resolver();
+    r.observe(ev(SCAN_ANALYSE), initialState());
+    expect(r.current().map((a) => a.rule.id)).toContain('exobiology-scan');
+
+    r.observe(ev(EMBARK_SHIP), initialState());
+    expect(r.current().map((a) => a.rule.id)).toContain('exobiology-scan');
+  });
+
+  it('keeps it through a liftoff, which is how you reach the next patch', () => {
+    // The actual bug. Measured across the corpus: of 196 liftoffs following an
+    // organic scan, 169 were followed by more scanning, median gap 63 seconds.
+    // Liftoff looks like leaving and is really travel within the same run.
+    const r = resolver();
+    r.observe(ev(SCAN_ANALYSE), initialState());
+    r.observe(ev(LIFTOFF), initialState());
+    expect(r.current().map((a) => a.rule.id)).toContain('exobiology-scan');
+  });
+
+  it('still ends when the data is sold', () => {
+    const r = resolver();
+    r.observe(ev(SCAN_ANALYSE), initialState());
+    r.observe(ev(SELL_ORGANIC_ONE), initialState());
+    expect(r.current().map((a) => a.rule.id)).not.toContain('exobiology-scan');
+  });
+
+  it('still ends on docking', () => {
+    const r = resolver();
+    r.observe(ev(SCAN_ANALYSE), initialState());
+    r.observe(ev(DOCKED_TRADER_STATION), initialState());
+    expect(r.current().map((a) => a.rule.id)).not.toContain('exobiology-scan');
+  });
+
+  it('does not end mining on a liftoff either, since mining is not on foot', () => {
+    // Guard against fixing this by deleting Liftoff everywhere: the mining rules
+    // never listed it, and their own endsOn list was measured as correct.
+    const mining = BUNDLED_RULES.rules.filter((rule) => rule.id.startsWith('mining-'));
+    expect(mining.length).toBeGreaterThan(0);
+    for (const rule of mining) {
+      expect(rule.endsOn ?? []).not.toContain('Liftoff');
+    }
   });
 });

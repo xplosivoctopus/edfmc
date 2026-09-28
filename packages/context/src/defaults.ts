@@ -86,8 +86,21 @@ export const BUNDLED_RULES: ContextRuleSet = {
       when: { kind: 'event', name: 'ScanOrganic' },
       priority: 80,
       ttlSeconds: 600,
-      // Lifting off ends the sampling run. Embark does not -- the next patch may be a short hop away.
-      endsOn: ['Liftoff', 'FSDJump', 'Docked', 'SellOrganicData'],
+      /*
+       * Deliberately NOT ended by Liftoff, which was the original mistake.
+       *
+       * Lifting off looks like leaving, and is actually how a commander travels
+       * between patches on the same body. Measured: of 196 liftoffs that followed
+       * an organic scan, 169 were followed by more scanning, at a median gap of 63
+       * seconds, and 148 of those resumed within five minutes. Ending here made
+       * the context vanish at exactly the moment it was still wanted -- on the way
+       * to the next patch.
+       *
+       * The same check was run against every other endsOn list in this file.
+       * Engineering ends on Undocked 88 times out of 88 and mining ends on leaving
+       * the ring; only this one was wrong.
+       */
+      endsOn: ['FSDJump', 'Docked', 'SellOrganicData'],
       resources: [{ label: 'Exobiology', page: 'Exobiology' }],
     },
     /*

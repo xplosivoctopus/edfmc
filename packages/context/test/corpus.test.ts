@@ -158,6 +158,83 @@ suite('bundled rules against the real corpus', () => {
     expect(checked - singular).toBeGreaterThan(0);
   });
 
+  it('does not end an activity that is about to continue', async () => {
+    /*
+     * The check that would have caught the Liftoff mistake.
+     *
+     * `endsOn` names events that mean "the commander has moved on". Whether an
+     * event really means that is a claim about how the game is played, and it is
+     * easy to get wrong from the name alone: lifting off looks like leaving and
+     * is actually how you travel between exobiology patches. Measured, 169 of 196
+     * liftoffs after an organic scan were followed by more scanning.
+     *
+     * So for every rule that declares endsOn, this replays the real corpus and
+     * asks: when the context was ended, how often did the very same activity
+     * resume shortly afterwards? A rule that is usually wrong about its own
+     * ending is a rule that disappears while it is still wanted.
+     */
+    const RESUME_WINDOW_MS = 5 * 60 * 1000;
+
+    const withEnders = BUNDLED_RULES.rules.filter((r) => (r.endsOn?.length ?? 0) > 0);
+    expect(withEnders.length).toBeGreaterThan(0);
+
+    const files = await listJournalFiles(DIR);
+    const state = initialState();
+
+    // Flatten the corpus once; every rule is then evaluated over the same list.
+    const events: Array<{ at: number; event: (typeof BUNDLED_RULES.rules)[number] extends never ? never : Parameters<typeof evaluate>[1]['event'] }> = [];
+    for (const f of files.filter((x) => x.sizeBytes > 0).slice(-60)) {
+      const result = await replayFile(f.fullPath);
+      for (const event of result.events) {
+        const at = event.source.provenance.timestampMs;
+        if (at !== null) events.push({ at, event });
+      }
+    }
+    if (events.length === 0) return;
+
+    const verdicts: string[] = [];
+    for (const rule of withEnders) {
+      let active = false;
+      let premature = 0;
+      let genuine = 0;
+
+      for (let i = 0; i < events.length; i += 1) {
+        const { at, event } = events[i]!;
+        if (evaluate(rule.when, { event, state })) {
+          active = true;
+          continue;
+        }
+        if (!active || !rule.endsOn!.includes(event.source.event)) continue;
+
+        // Ended. Did the same activity resume soon after?
+        active = false;
+        let resumed = false;
+        for (let j = i + 1; j < events.length; j += 1) {
+          const next = events[j]!;
+          if (next.at - at > RESUME_WINDOW_MS) break;
+          if (evaluate(rule.when, { event: next.event, state })) {
+            resumed = true;
+            break;
+          }
+        }
+        if (resumed) premature += 1;
+        else genuine += 1;
+      }
+
+      if (premature + genuine >= 10) {
+        verdicts.push(`${rule.id}: ended ${genuine}, premature ${premature}`);
+        expect(
+          premature,
+          `${rule.id} ends on [${rule.endsOn!.join(', ')}] but the activity resumed ` +
+            `within 5 minutes ${premature} times against ${genuine} genuine endings`,
+        ).toBeLessThanOrEqual(genuine);
+      }
+    }
+
+    // Informational: shows which rules had enough occurrences to judge.
+    expect(verdicts.length).toBeGreaterThanOrEqual(0);
+  }, 120_000);
+
   it('never fires a station rule while the commander is not docked', async () => {
     // State-scoped station rules are held open by stationServices, which is cleared
     // on undock. A rule that survived leaving a station would advertise facilities

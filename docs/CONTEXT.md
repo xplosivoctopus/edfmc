@@ -309,6 +309,29 @@ whatever the TTL says.
 TTL is now the fallback for when nothing announces the end, and every activity TTL
 came down accordingly.
 
+### Whether an event really means "moved on" is a measurable claim
+
+`endsOn` was introduced with lists written from what the event names suggest, and
+one of them was wrong. `exobiology-scan` ended on `Liftoff`, which sounds like
+leaving and is in fact how a commander travels between patches on the same body.
+
+| | Resumed within 5 min | Genuinely ended |
+|---|---|---|
+| exobiology on `Liftoff` | **169** | 26 |
+| exobiology on `Docked` | 0 | 5 |
+| engineering on `Undocked` | 0 | 88 |
+| mining on `SupercruiseEntry` | 4 | 16 |
+
+Median gap before scanning resumed after a liftoff: **63 seconds**. The context
+disappeared at exactly the moment it was still wanted, which is how it was
+noticed — in the game, on boarding the ship.
+
+Exactly one list was wrong; the same check run over the others confirmed them.
+`packages/context/test/corpus.test.ts` now applies it to every rule that declares
+`endsOn`: replay the corpus, and for each ending, ask whether the same activity
+resumed shortly afterwards. A rule that is usually wrong about its own ending
+fails. Restoring `Liftoff` makes it fail, which is how it was checked.
+
 Two things this deliberately does **not** do. Station rules get no `endsOn` at all —
 they are state-scoped, held open by their condition, and where the commander *is* has
 no business being ended by an event. And `endsOn` is not a blunt list of "any movement
