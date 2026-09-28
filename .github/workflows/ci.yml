@@ -1,0 +1,160 @@
+# Continuous integration for ordinary development.
+#
+# The release workflow only runs on a version tag, which meant a break could sit
+# on `main` until someone tried to ship. This runs on every pull request and on
+# every push to `main`.
+#
+# Deliberately does NOT build installers: that is minutes of Rust compilation for
+# a signal the tests already give. Packaging stays in release.yml.
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+# A new push supersedes an in-flight run on the same ref.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  # TypeScript, and the Postgres-backed suites that normally skip.
+  node:
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+          # The suites TRUNCATE, and refuse to run against a database whose name
+          # is not marked for testing -- they once wiped the development database
+          # mid-ingest. A disposable container satisfies both the guard and the
+          # reason behind it.
+          POSTGRES_DB: edfm_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install
+        run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck --workspaces --if-present
+
+      - name: Migrate the test database
+        env:
+          EDFM_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/edfm_test
+          # loadConfig() requires a salt before it will hand back any config, so
+          # the migrator needs one even though it hashes nothing. Throwaway: this
+          # database exists for the length of the job.
+          EDFM_IDENTITY_SALT: ${{ '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef' }}
+        run: npm run migrate --workspace @edfm/api
+
+      - name: Test
+        env:
+          # Only ever a container that dies with the job. Never point this at a
+          # development or production database.
+          EDFM_TEST_DSN: postgresql://postgres:postgres@localhost:5432/edfm_test
+        run: npm test --workspaces --if-present
+
+      - name: Build the desktop frontend
+        # `tsc && vite build`. Catches anything that only fails in a production
+        # bundle, without paying for a full Tauri package.
+        run: npm run build --workspace @edfm/desktop
+
+  # The native layer. Windows because the overlay is Win32 and will not build
+  # anywhere else -- there is no point pretending otherwise on a Linux runner.
+  rust:
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: apps/desktop/src-tauri
+
+      - name: Install
+        run: npm ci
+
+      - name: Build the frontend
+        # tauri-build resolves frontendDist at compile time, so the bundle has to
+        # exist before the crate will build -- even for `cargo test`.
+        run: npm run build --workspace @edfm/desktop
+
+      - name: Rust tests
+        working-directory: apps/desktop/src-tauri
+        run: cargo test
+
+  # EDDN ingestion. Separate because it is Python and shares nothing with the
+  # npm workspaces but the database.
+  worker:
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: edfm_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: services/eddn-worker/requirements-dev.txt
+
+      - name: Install
+        working-directory: services/eddn-worker
+        run: pip install -r requirements-dev.txt
+
+      - name: Apply the worker's schema
+        # Its integration tests need the tables. Applied with psql rather than by
+        # installing Node and running the API's migrator, which would pull the
+        # whole JS toolchain into a Python job to run the same SQL.
+        env:
+          PGPASSWORD: postgres
+        run: |
+          for f in services/eddn-worker/migrations/*.sql; do
+            psql -h localhost -U postgres -d edfm_test -v ON_ERROR_STOP=1 -f "$f"
+          done
+
+      - name: Test
+        working-directory: services/eddn-worker
+        env:
+          EDFM_TEST_DSN: postgresql://postgres:postgres@localhost:5432/edfm_test
+        run: pytest
