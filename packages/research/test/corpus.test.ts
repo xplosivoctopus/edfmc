@@ -152,9 +152,8 @@ suite('what this corpus can and cannot support', () => {
     // usable sessions across 12 settlements, and the summary refuses to turn
     // that into a percentage rather than drawing a chart from it.
     //
-    // Not asserted as one commander: this machine's corpus contains two
-    // (Sythan and a second commander), which is exactly why the field is counted rather
-    // than assumed.
+    // Not asserted as one commander: this machine's corpus contains two of them,
+    // which is exactly why the field is counted rather than assumed.
     expect(summary.uniqueCommanders).toBeGreaterThanOrEqual(1);
     expect(summary.sufficientForRates).toBe(false);
     expect(summary.caveat).toContain('rates are not');

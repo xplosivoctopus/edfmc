@@ -82,7 +82,7 @@ ssh -p <port> -L 8787:127.0.0.1:8787 <user>@<host>
 ```
 
 An earlier version also allowed the LAN range. That was removed: LAN traffic
-hairpins through the router and arrives as `the router LAN address`, so the rule's
+hairpins through the router and arrives as the router's own address, so the rule's
 effectiveness depended on NAT behaviour rather than on policy. External traffic
 does preserve real client addresses, so rate limiting by IP still works.
 
