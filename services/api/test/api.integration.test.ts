@@ -44,6 +44,7 @@ const config = {
   discordTagsRaw: undefined,
   adminToken: undefined,
   rateLimitPerMinute: 100000,
+  trustProxy: 'loopback',
   env: 'test',
 } as const;
 

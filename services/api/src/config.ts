@@ -29,6 +29,13 @@ export interface Config {
    */
   readonly adminToken: string | undefined;
   readonly rateLimitPerMinute: number;
+  /**
+   * Which peers may be believed about `X-Forwarded-For`.
+   *
+   * Passed to Fastify verbatim, so it accepts anything proxy-addr does: an
+   * address, a CIDR, a comma-separated list, or the keyword `loopback`.
+   */
+  readonly trustProxy: string;
   readonly env: 'development' | 'production' | 'test';
 }
 
@@ -107,6 +114,20 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     discordTagsRaw: env.EDFM_DISCORD_FORUM_TAGS,
     adminToken: env.EDFM_ADMIN_TOKEN,
     rateLimitPerMinute: Number(env.EDFM_RATE_LIMIT_PER_MINUTE ?? 60),
+    /*
+     * Loopback only, because that is the documented topology: nginx terminates
+     * TLS and proxies to 127.0.0.1.
+     *
+     * This was `true`, which believes X-Forwarded-For from anyone. Since the
+     * service is internet-reachable through nginx, a remote client could name
+     * its own address -- and `req.ip` feeds both the rate limiter's key and the
+     * stored sourceHash, so the two controls that exist to notice one source
+     * flooding the endpoint were both steerable by that source.
+     *
+     * Overridable for a deployment that puts a different proxy in front, but the
+     * default must be the narrow one: getting this wrong fails open and silently.
+     */
+    trustProxy: env.EDFM_TRUST_PROXY ?? 'loopback',
     env: mode,
   };
 }

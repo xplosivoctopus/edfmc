@@ -31,7 +31,10 @@ export async function buildApp(options: AppOptions): Promise<FastifyInstance> {
     // A station observation is a few hundred bytes. Anything approaching this
     // is not a submission.
     bodyLimit: 64 * 1024,
-    trustProxy: true,
+    // Never `true`. See config.trustProxy: believing X-Forwarded-For from any
+    // peer lets a remote client choose the identity that rate limiting and
+    // flood detection are keyed on.
+    trustProxy: config.trustProxy,
   });
 
   await app.register(rateLimit, {

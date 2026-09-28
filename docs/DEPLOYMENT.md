@@ -65,6 +65,38 @@ npm run migrate --workspace @edfm/api && sudo systemctl restart edfm-api edfm-ed
 executes TypeScript directly, so `--omit=dev` without it leaves the service
 unable to boot.
 
+## Proxy headers
+
+`req.ip` is the rate limiter's key and the input to the stored `sourceHash`, so
+whoever controls it controls both of the mechanisms that exist to notice one
+source flooding the endpoint. Two things have to hold, and neither is sufficient
+alone.
+
+**Fastify trusts only the proxy.** `trustProxy` defaults to `loopback`, so
+`X-Forwarded-For` is believed only when the peer is 127.0.0.1 — which, in this
+topology, can only be nginx. It was previously `true`, meaning any client on the
+internet could name its own address; a test in `services/api/test/trust-proxy.test.ts`
+demonstrates that this was spoofable rather than merely asserting it.
+
+Override with `EDFM_TRUST_PROXY` only if a different proxy is introduced, and
+name it exactly. Never set it to `true`.
+
+**nginx overwrites rather than extends.** Use `$remote_addr`, not
+`$proxy_add_x_forwarded_for`:
+
+```nginx
+proxy_set_header X-Forwarded-For   $remote_addr;
+proxy_set_header X-Forwarded-Proto $scheme;
+proxy_set_header X-Real-IP         $remote_addr;
+proxy_set_header Host              $host;
+```
+
+`$proxy_add_x_forwarded_for` appends the peer to whatever the client sent, so an
+attacker-supplied chain survives into the header. With loopback trust the
+rightmost untrusted entry is still the address nginx observed, so the chain form
+is not exploitable on its own — but it stores attacker-controlled text in a
+security-relevant header for no benefit. Overwriting removes the question.
+
 ## Administrative endpoints
 
 `/v1/admin/*` is protected twice over, because either layer alone is thin:
