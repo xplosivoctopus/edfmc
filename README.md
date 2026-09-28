@@ -51,11 +51,13 @@ Your journal contains your chat, friends, finances and travel history. It is
 read on your machine and **never uploaded**.
 
 With contribution switched on, the app sends one thing: observations about
-stations you dock at. Your commander name and Frontier ID are sent as one-way
-hashes, never as values, so the server can tell two reporters apart without
-knowing who either is. There is no telemetry and no analytics in any
-configuration, and with contribution off the app makes no network requests at
-all.
+stations you dock at, over HTTPS. Your Frontier ID travels with them so the
+server can tell two reporters apart, and your commander name travels only if you
+have asked to be credited. The server hashes both on arrival and stores only the
+hashes, so a database dump holds no commander identifiers — but it does see the
+values in transit, and this project will not claim otherwise. There is no
+telemetry and no analytics in any configuration, and with contribution off the
+app makes no network requests at all.
 
 [docs/PRIVACY.md](docs/PRIVACY.md) is the full account.
 

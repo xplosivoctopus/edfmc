@@ -88,9 +88,11 @@ describe('buildSubmission', () => {
     expect((named.identity as Record<string, unknown>).commanderName).toBe('Sythan');
   });
 
-  it('sends the FID in both modes, because independence needs a distinguisher', () => {
-    // The server stores a keyed hash and never the value, so attribution is a
-    // decision about credit rather than about disclosure.
+  it('sends the FID as a VALUE in both modes, because independence needs a distinguisher', () => {
+    // Stated plainly because the documentation once claimed the opposite: the raw
+    // FID goes over the wire, and the server hashes it on arrival and keeps only
+    // the hash. Attribution is therefore a decision about credit rather than about
+    // what is retained -- but the server does see the value. See docs/PRIVACY.md.
     for (const mode of ['anonymous', 'commander'] as const) {
       const body = buildSubmission(observation(), mode, '0.1.0');
       expect((body.identity as Record<string, unknown>).fid).toBe('F1234567');
