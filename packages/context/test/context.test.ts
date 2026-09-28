@@ -103,6 +103,10 @@ const SAA_PLANET =
 const SAA_PLANET_MINING =
   '{ "timestamp":"2026-07-11T03:00:00Z", "event":"SAASignalsFound", "BodyName":"Wregoe KO-G c24-7 16 a", "SystemAddress":2833504080594, "BodyID":21, "Signals":[ { "Type":"$PlanetaryMiningLocation_Name;", "Count":1 } ], "Genuses":[] }';
 
+/** Real shape: biological at index 0, mining at index 1, plus genera. */
+const SAA_PLANET_BIO_AND_MINING =
+  '{ "timestamp":"2026-07-11T04:00:00Z", "event":"SAASignalsFound", "BodyName":"Wregoe KO-G c24-7 16 a", "SystemAddress":2833504080594, "BodyID":21, "Signals":[ { "Type":"$SAA_SignalType_Biological;", "Type_Localised":"Biological", "Count":3 }, { "Type":"$PlanetaryMiningLocation_Name;", "Count":1 } ], "Genuses":[ { "Genus":"$Codex_Ent_Brancae_Name;", "Genus_Localised":"Brain Trees" } ] }';
+
 const INTERDICTED =
   '{ "timestamp":"2026-09-18T06:00:00Z", "event":"Interdicted", "Submitted":false, "Interdictor":"Cory Reynolds", "IsPlayer":false, "Faction":"Sirius Special Forces", "Power":"Li Yong-Rui" }';
 
@@ -460,6 +464,10 @@ describe('bundled rule set', () => {
       'How to Use a Refinery', 'Laser Mining', 'Mining', 'Mining Hotspot',
       'Pioneer Supplies', 'Planetary Rings', 'Powerplay', 'Refinery',
       'Ship Modules', 'Ships and Equipment', 'Trailblazers',
+      // Verified 2026-09-27 via action=query&titles=. Checked at the same time and
+      // deliberately NOT added, because they do not exist: 'Planetary Mining',
+      // 'Surface Prospecting', 'Biological Signals', 'Geological Signals'.
+      'Detailed Surface Scanner', 'Surface Mining', 'Sub-surface Mining', 'Exploration',
     ]);
 
     // Section anchors verified the same way, via action=parse&prop=sections. A
@@ -862,5 +870,89 @@ describe('ring scans are not planet scans', () => {
     // The near-miss case. These carry $PlanetaryMiningLocation_Name; and are
     // genuinely mining-related, but they are not rings and have no hotspots.
     expect(active(SAA_PLANET_MINING)).not.toContain('mining-ring-scan');
+  });
+});
+
+describe('array traversal in condition paths', () => {
+  const state = initialState();
+  const evt = (line: string): NormalizedEvent => ev(line);
+
+  it('matches any element, not just a fixed index', () => {
+    // The reason this exists: the mining signal was observed at index 0, 1 and 2
+    // (19 / 69 / 16 times), so a fixed index finds 18% of them.
+    const when = {
+      kind: 'field' as const,
+      path: 'Signals.*.Type',
+      op: 'eq' as const,
+      value: '$PlanetaryMiningLocation_Name;',
+    };
+    expect(evaluate(when, { event: evt(SAA_PLANET_BIO_AND_MINING), state })).toBe(true);
+    expect(evaluate(when, { event: evt(SAA_PLANET), state })).toBe(false);
+  });
+
+  it('is false for an empty array, exists included', () => {
+    // "The array had nothing to offer" is not the same as "there is something".
+    expect(
+      evaluate(
+        { kind: 'field', path: 'Genuses.*.Genus', op: 'exists' },
+        { event: evt(SAA_PLANET), state },
+      ),
+    ).toBe(false);
+  });
+
+  it('refuses a path with too many stars', () => {
+    // Rule sets come from a server and from plugins; a path must not be able to
+    // buy unbounded work.
+    expect(
+      evaluate(
+        { kind: 'field', path: 'a.*.b.*.c.*.d', op: 'exists' },
+        { event: evt(SAA_PLANET), state },
+      ),
+    ).toBe(false);
+  });
+
+  it('still refuses prototype-walking segments', () => {
+    expect(
+      evaluate(
+        { kind: 'field', path: 'Signals.*.__proto__', op: 'exists' },
+        { event: evt(SAA_PLANET_BIO_AND_MINING), state },
+      ),
+    ).toBe(false);
+  });
+});
+
+describe('planet DSS contexts', () => {
+  function active(line: string): string[] {
+    const r = new ContextResolver(BUNDLED_RULES, { now: () => 1000, maxActive: 5 });
+    r.observe(ev(line), initialState());
+    return r.current().map((a) => a.rule.id);
+  }
+
+  it('reports biology on a body that has genera', () => {
+    const ids = active(SAA_PLANET_BIO_AND_MINING);
+    expect(ids).toContain('planet-biological-signals');
+  });
+
+  it('reports a surface mining site wherever that signal sits in the list', () => {
+    expect(active(SAA_PLANET_BIO_AND_MINING)).toContain('planet-surface-mining');
+  });
+
+  it('reports both at once, because a body can have both', () => {
+    const ids = active(SAA_PLANET_BIO_AND_MINING);
+    expect(ids).toContain('planet-biological-signals');
+    expect(ids).toContain('planet-surface-mining');
+    // And still says nothing about rings.
+    expect(ids).not.toContain('mining-ring-scan');
+  });
+
+  it('says nothing about biology on a body with no genera', () => {
+    expect(active(SAA_PLANET)).not.toContain('planet-biological-signals');
+  });
+
+  it('does not fire the planet rules for a ring', () => {
+    const ids = active(SAA_RING);
+    expect(ids).toContain('mining-ring-scan');
+    expect(ids).not.toContain('planet-biological-signals');
+    expect(ids).not.toContain('planet-surface-mining');
   });
 });

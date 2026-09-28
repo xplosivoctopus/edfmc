@@ -343,6 +343,67 @@ export const BUNDLED_RULES: ContextRuleSet = {
         { label: 'Planetary Rings', page: 'Planetary Rings' },
       ],
     },
+    /*
+     * A detailed surface scan of a PLANET. Same event as a ring scan, different
+     * situation entirely -- 169 of the 198 SAASignalsFound in the corpus.
+     *
+     * Two things on a planet are worth surfacing, and they are independent: a body
+     * can have both, and 89 of these events carry two signals.
+     */
+    {
+      id: 'planet-biological-signals',
+      title: 'Biological signals',
+      subtitle: 'This body has exobiology to find',
+      when: {
+        kind: 'all',
+        of: [
+          { kind: 'event', name: 'SAASignalsFound' },
+          /*
+           * `Genuses` is exactly equivalent to "has a biological signal", measured:
+           * 103 events carry a Biological signal, all 103 list genera, and not one
+           * event lists genera without it. Keyed on Genuses rather than on the
+           * signal because it is the same fact stated more directly -- and it is
+           * the genus list that makes the body worth landing on.
+           */
+          { kind: 'field', path: 'Genuses.0.Genus', op: 'exists' },
+        ],
+      },
+      priority: 65,
+      ttlSeconds: 1800,
+      // Scanning and landing take a while, and the body stays interesting for as
+      // long as the commander is in the system. Leaving it is what ends this.
+      endsOn: ['FSDJump', 'Docked'],
+      resources: [
+        { label: 'Exobiology', page: 'Exobiology' },
+        { label: 'Detailed Surface Scanner', page: 'Detailed Surface Scanner' },
+      ],
+    },
+    {
+      id: 'planet-surface-mining',
+      title: 'Surface mining site',
+      subtitle: 'Materials can be mined on this body',
+      when: {
+        kind: 'all',
+        of: [
+          { kind: 'event', name: 'SAASignalsFound' },
+          /*
+           * `*` rather than a fixed index deliberately: this signal was observed at
+           * index 0, 1 and 2 (19 / 69 / 16 times), so `Signals.0.Type` would have
+           * matched 18% of them. The raw token is used because this signal has no
+           * `Type_Localised` companion.
+           */
+          { kind: 'field', path: 'Signals.*.Type', op: 'eq', value: '$PlanetaryMiningLocation_Name;' },
+        ],
+      },
+      priority: 62,
+      ttlSeconds: 1800,
+      endsOn: ['FSDJump', 'Docked'],
+      resources: [
+        { label: 'Surface Mining', page: 'Surface Mining' },
+        { label: 'Sub-surface Mining', page: 'Sub-surface Mining' },
+        { label: 'Mining', page: 'Mining' },
+      ],
+    },
     {
       id: 'mining-refining',
       title: 'Refining',

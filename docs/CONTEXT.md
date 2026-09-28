@@ -232,6 +232,29 @@ find this, because a fixture is chosen by the person who already believes the ru
 right. `packages/context/test/corpus.test.ts` now replays the real journals through
 the bundled rules and asserts the ring rule matches rings and nothing else.
 
+### What a planet scan is worth saying instead
+
+Gating the ring rule left a planet DSS saying nothing, which is correct but not
+useful — those 169 events carry real information:
+
+| Signal | Events | Rule |
+|---|---|---|
+| `$SAA_SignalType_Biological;` | 103 | `planet-biological-signals` |
+| `$PlanetaryMiningLocation_Name;` | 104 | `planet-surface-mining` |
+
+They are independent — a body can have both, and 89 of these events carry two or more
+signals — so they are two rules that can fire together rather than one combined one.
+
+The biological rule keys on `Genuses`, not on the signal, because the two are exactly
+equivalent in the corpus (103 events with the signal, all 103 with genera, none with
+genera and no signal) and the genus list is the thing that makes a body worth landing
+on.
+
+The mining rule needed a capability the engine did not have: that signal sits at index
+0, 1 or 2, so `Signals.0.Type` would have found 18% of them. `field` paths now accept
+`*` for "any element", bounded to two stars and 64 gathered values because rule sets
+arrive from a server and from plugins.
+
 ## A context has to be able to end
 
 The commander knows what they just did. What deserves the screen is what is true

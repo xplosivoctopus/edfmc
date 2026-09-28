@@ -52,15 +52,64 @@ export function usesEvent(condition: Condition, depth = 0): boolean {
  * Prototype keys are refused: rules are untrusted input, and `__proto__` or
  * `constructor` in a path must never reach into the prototype chain.
  */
+/**
+ * Several values gathered by a `*` segment. Any one of them matching satisfies the
+ * comparison, which is what "this array contains something like X" means.
+ */
+class Gathered {
+  constructor(readonly values: readonly unknown[]) {}
+}
+
+/**
+ * Bounds on `*` traversal.
+ *
+ * Rule sets arrive from a server and from plugins, so a path must not be able to
+ * buy unbounded work. Two stars at most, and at most this many values collected,
+ * which caps the total regardless of how large the arrays are.
+ */
+const MAX_GATHERED = 64;
+const MAX_STARS = 2;
+
 function readPath(root: unknown, path: string): unknown {
   if (path.length === 0 || path.length > RULE_LIMITS.maxStringLength) return undefined;
 
+  const segments = path.split('.');
+  let stars = 0;
+  for (const segment of segments) if (segment === '*') stars += 1;
+  if (stars > MAX_STARS) return undefined;
+
+  return walkPath(root, segments, 0);
+}
+
+function walkPath(root: unknown, segments: readonly string[], from: number): unknown {
   let current: unknown = root;
-  for (const segment of path.split('.')) {
+
+  for (let i = from; i < segments.length; i += 1) {
+    const segment = segments[i]!;
     if (segment === '__proto__' || segment === 'constructor' || segment === 'prototype') {
       return undefined;
     }
     if (current === null || current === undefined) return undefined;
+
+    // `*` means "any element". Needed because the useful thing about an array is
+    // usually that it contains something, not what sits at a fixed index: a
+    // planet's PlanetaryMiningLocation signal was observed at index 0, 1 and 2,
+    // so `Signals.0.Type` would have found it only 18% of the time.
+    if (segment === '*') {
+      if (!Array.isArray(current)) return undefined;
+
+      const gathered: unknown[] = [];
+      for (const item of current) {
+        const value =
+          i + 1 === segments.length ? item : walkPath(item, segments, i + 1);
+
+        if (value instanceof Gathered) gathered.push(...value.values);
+        else if (value !== undefined) gathered.push(value);
+
+        if (gathered.length >= MAX_GATHERED) break;
+      }
+      return new Gathered(gathered.slice(0, MAX_GATHERED));
+    }
 
     if (Array.isArray(current)) {
       const index = Number(segment);
@@ -72,6 +121,7 @@ function readPath(root: unknown, path: string): unknown {
     if (!Object.prototype.hasOwnProperty.call(current, segment)) return undefined;
     current = (current as Record<string, unknown>)[segment];
   }
+
   return current;
 }
 
@@ -82,6 +132,16 @@ function plain(value: unknown): unknown {
 }
 
 function compare(actual: unknown, op: ComparisonOp, expected: JsonPrimitive | undefined): boolean {
+  // A `*` path yields several candidates; the condition holds if any one does.
+  // An empty gather is false for every operator, `exists` included, which is the
+  // honest reading of "the array had nothing to offer".
+  if (actual instanceof Gathered) {
+    return actual.values.some((v) => compareOne(v, op, expected));
+  }
+  return compareOne(actual, op, expected);
+}
+
+function compareOne(actual: unknown, op: ComparisonOp, expected: JsonPrimitive | undefined): boolean {
   const value = plain(actual);
 
   if (op === 'exists') return value !== undefined && value !== null;

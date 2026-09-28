@@ -68,6 +68,53 @@ suite('bundled rules against the real corpus', () => {
     expect(planets).toBeGreaterThan(0);
   });
 
+  it('classifies every real planet scan the way the payload says', async () => {
+    // The planet rules exist because 169 of 198 surface scans are not rings. They
+    // are only worth having if they agree with the data on every one of them.
+    const bio = BUNDLED_RULES.rules.find((r) => r.id === 'planet-biological-signals');
+    const mining = BUNDLED_RULES.rules.find((r) => r.id === 'planet-surface-mining');
+    expect(bio).toBeDefined();
+    expect(mining).toBeDefined();
+
+    const files = await listJournalFiles(DIR);
+    const state = initialState();
+
+    let bioExpected = 0;
+    let miningExpected = 0;
+    const wrong: string[] = [];
+
+    for (const f of files.filter((x) => x.sizeBytes > 0)) {
+      const result = await replayFile(f.fullPath);
+      for (const event of result.events) {
+        if (event.source.event !== 'SAASignalsFound') continue;
+
+        const raw = event.source.raw as Record<string, unknown>;
+        const signals = Array.isArray(raw['Signals']) ? (raw['Signals'] as unknown[]) : [];
+        const genuses = Array.isArray(raw['Genuses']) ? (raw['Genuses'] as unknown[]) : [];
+        const body = String(raw['BodyName'] ?? '');
+
+        const hasGenera = genuses.length > 0;
+        const hasMining = signals.some(
+          (sig) => String((sig as Record<string, unknown>)['Type']) === '$PlanetaryMiningLocation_Name;',
+        );
+        if (hasGenera) bioExpected += 1;
+        if (hasMining) miningExpected += 1;
+
+        const gotBio = evaluate(bio!.when, { event, state });
+        const gotMining = evaluate(mining!.when, { event, state });
+        if (gotBio !== hasGenera) wrong.push(`bio: ${body} -> ${gotBio}, expected ${hasGenera}`);
+        if (gotMining !== hasMining) {
+          wrong.push(`mining: ${body} -> ${gotMining}, expected ${hasMining}`);
+        }
+      }
+    }
+
+    if (bioExpected + miningExpected === 0) return;
+    expect(wrong, 'misclassified: ' + wrong.slice(0, 10).join(' / ')).toHaveLength(0);
+    expect(bioExpected).toBeGreaterThan(0);
+    expect(miningExpected).toBeGreaterThan(0);
+  });
+
   it('never fires a station rule while the commander is not docked', async () => {
     // State-scoped station rules are held open by stationServices, which is cleared
     // on undock. A rule that survived leaving a station would advertise facilities

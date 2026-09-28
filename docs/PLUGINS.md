@@ -122,6 +122,23 @@ be told, not have their plugin quietly altered into something else.
 }
 ```
 
+### Matching inside an array
+
+A `field` path may contain `*`, meaning **any element**:
+
+```json
+{ "kind": "field", "path": "Signals.*.Type", "op": "eq", "value": "$PlanetaryMiningLocation_Name;" }
+```
+
+Reach for this rather than a fixed index, because position is usually not stable.
+The bundled surface-mining rule is the cautionary tale: that signal appears at index
+0, 1 and 2 in the corpus (19 / 69 / 16 times), so `Signals.0.Type` would have matched
+18% of the bodies that actually have one.
+
+An empty array is false for every operator, `exists` included — "the array had
+nothing to offer" is not "there is something". At most two `*` per path, and at most
+64 values are gathered, so a path cannot buy unbounded work.
+
 ### Say what ends your context, not just how long it lasts
 
 `ttlSeconds` is a **fallback**, for when nothing tells us the activity finished.
