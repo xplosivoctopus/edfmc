@@ -314,20 +314,60 @@ export function cancelCarrierJump(state: CommanderState, carrierId: number): voi
 }
 
 /**
- * Note where a carrier actually is, completing a pending jump if it arrived.
+ * Note where a carrier is, and end a pending jump when it is no longer pending.
  *
- * This is the only completion signal that covers the roughly half of jumps the
- * commander is not aboard to witness: `CarrierJump` is written only when they are
- * (53 times while docked at an owned carrier, never otherwise), against 136 jump
- * requests. Keying completion on it alone would strand those countdowns forever.
+ * Originally this cleared only on an exact match with the destination, which
+ * stranded countdowns. Measured across 138 real requests:
+ *
+ *  - 93% confirm within five minutes of the stated departure (median: zero).
+ *  - 11 were never confirmed at all.
+ *  - Five reported a *different* system next, because the carrier had moved on
+ *    again, or the location arrived from a later session.
+ *
+ * So an exact match is sufficient but not necessary. Once the departure time has
+ * passed, **any** report of where that carrier is ends the countdown: whatever it
+ * says, the carrier is not still waiting to leave.
+ *
+ * Note what that does and does not claim. Clearing on a non-matching location
+ * does not assert the carrier arrived -- only that there is no longer a pending
+ * departure to count down to, which is the only thing that was ever displayed.
+ *
+ * Before the departure time a non-matching location is just the carrier sitting
+ * where it was, and the jump stays pending.
  */
 export function confirmCarrierAt(
   state: CommanderState,
   carrierId: number,
   starSystem: string,
+  observedAt?: string,
 ): void {
   const pending = state.carrierJumps[carrierId];
-  if (pending && pending.system === starSystem) delete state.carrierJumps[carrierId];
+  if (!pending) return;
+
+  if (pending.system === starSystem) {
+    delete state.carrierJumps[carrierId];
+    return;
+  }
+
+  // Without a timestamp there is nothing to compare, so stay conservative.
+  if (observedAt === undefined) return;
+  const seen = Date.parse(observedAt);
+  const departs = Date.parse(pending.departureTime);
+  if (Number.isFinite(seen) && Number.isFinite(departs) && seen >= departs) {
+    delete state.carrierJumps[carrierId];
+  }
+}
+
+/**
+ * The commander watched the carrier jump.
+ *
+ * `CarrierJump` fires only when they are aboard, and carries no CarrierID -- but
+ * 53 of 73 carry a MarketID, which for a carrier is the same number. That makes
+ * it a definitive arrival for the one case where the commander is guaranteed to
+ * be looking at the overlay while it happens.
+ */
+export function confirmCarrierJumped(state: CommanderState, marketId: number): void {
+  delete state.carrierJumps[marketId];
 }
 
 /** Trader kinds the journal actually emits, lowercase as `TraderType` reports them. */
@@ -423,7 +463,12 @@ export function applyEvent(state: CommanderState, event: NormalizedEvent): Comma
     }
 
     case 'carrier-jump': {
-      applyLocationLike(state, event.data as LocationData);
+      const d = event.data as LocationData;
+      applyLocationLike(state, d);
+      // The commander was aboard and watched it happen, which is the one case
+      // where they are certainly looking at the overlay. MarketID identifies the
+      // carrier; CarrierJump carries no CarrierID of its own.
+      if (isKnown(d.marketId)) confirmCarrierJumped(state, d.marketId);
       break;
     }
 
@@ -475,7 +520,7 @@ export function applyEvent(state: CommanderState, event: NormalizedEvent): Comma
     case 'carrier-location': {
       const d = event.data as { carrierId: Known<number>; starSystem: Known<string> };
       if (isKnown(d.carrierId) && isKnown(d.starSystem)) {
-        confirmCarrierAt(state, d.carrierId, d.starSystem);
+        confirmCarrierAt(state, d.carrierId, d.starSystem, event.source.provenance.timestamp);
       }
       break;
     }

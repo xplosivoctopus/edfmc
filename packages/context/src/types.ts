@@ -123,6 +123,19 @@ export interface ContextRule {
   readonly endsOn?: readonly string[];
   readonly resources: readonly ContextResource[];
   /**
+   * Extra explanation, shown only in New CMDR mode.
+   *
+   * Declared on the rule rather than written into React, so it travels with the
+   * thing it explains -- a server rule set and a plugin get it for free, and
+   * nobody has to find the component that renders a context in order to explain
+   * one.
+   *
+   * Deliberately NOT an article. EDFM is the reference; this is the sentence or
+   * two that makes the context make sense to someone who has not met the
+   * mechanic, with a link for the rest.
+   */
+  readonly guidance?: ContextGuidance;
+  /**
    * Short imperative steps the commander can act on right now, e.g. "Follow the
    * blue circle to fight the interdiction." Most contexts are informational —
    * this is for the minority where there is something to actually do.
@@ -134,6 +147,31 @@ export interface ContextRule {
    */
   readonly note?: string;
 }
+
+/**
+ * Subject-tagged explanatory text.
+ *
+ * `topic` is carried now and not yet acted on. The first milestone has two
+ * levels and no per-topic preference, but tagging from the start means adding
+ * "explain exobiology but not mining" later is a settings change rather than a
+ * migration of every rule that exists by then.
+ */
+export interface ContextGuidance {
+  /** e.g. `exobiology`, `mining`, `engineering`. Free-form; not an enum yet. */
+  readonly topic?: string;
+  /**
+   * Shown at the `new-cmdr` level. One or two sentences.
+   *
+   * Length-capped by the sanitiser: a rule set is untrusted input, and an
+   * overlay is not where a wall of text belongs.
+   */
+  readonly beginner?: string;
+}
+
+/** How much explanation the commander asked for. Never changes which facts are shown. */
+export type GuidanceMode = 'standard' | 'new-cmdr';
+
+export const DEFAULT_GUIDANCE_MODE: GuidanceMode = 'standard';
 
 export interface ContextRuleSet {
   /** Bumped by the server whenever rules change; used for cache validation (§23). */
@@ -178,6 +216,13 @@ export const RULE_LIMITS = {
   maxStringLength: 512,
   /** Enough for a short numbered checklist; more than that is not readable mid-flight. */
   maxActions: 4,
+  /**
+   * Beginner guidance is a nudge, not an article.
+   *
+   * Shorter than a note on purpose: this can appear in the overlay, over the
+   * game, where anything longer is unreadable and unwelcome.
+   */
+  maxGuidanceChars: 240,
   /** A handful of "you have moved on" events is plenty; more suggests a modelling error. */
   maxEndsOn: 8,
 } as const;

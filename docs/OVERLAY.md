@@ -131,3 +131,93 @@ The overlay redraws only when the underlying state actually changes, or when an
 animation genuinely requires a frame. It must not run a render loop. This matters
 more here than anywhere else in the application: the overlay is, by definition,
 always running while a game is running (§30).
+
+## The overlay as a workspace
+
+Independently controlled widgets, not one panel. Each has its own visibility
+setting, its own remembered position, and inherits the same appearance.
+
+| Widget | Default | What it answers |
+|---|---|---|
+| Current Context | on | What is relevant right now |
+| Missions | on | What is outstanding |
+| Carrier Jump | on | When your carrier leaves |
+| Live Journal | **off** | What was just recorded |
+
+`EDFM notes` is deliberately absent from that table: it is a **sub-option of
+Missions**, not a panel. It has no position, no frame and nothing to drag, and the
+settings UI disables it when Missions is off rather than offering a toggle that
+cannot act.
+
+Live Journal is off by default because it is the only widget that does not answer
+"what is true now" -- it is the newest thing recorded, which some commanders want
+in view and others would immediately switch off.
+
+### Appearance
+
+Two settings, deliberately not one.
+
+```
+--overlay-bg-opacity     panel background alpha   0 .. 1     default 0.72
+--overlay-text-opacity   text and icon alpha      0.35 .. 1  default 1
+```
+
+Set once on the overlay root, so every widget inherits them and a future widget is
+styled correctly by doing nothing. One combined "overall opacity" control is the
+thing that makes an overlay unreadable: a commander who wants a fainter panel
+almost never wants fainter text.
+
+Background may reach fully transparent -- text on bare scenery is a real
+preference, and the text keeps its own shadow. **Text may not.** Below roughly a
+third it stops being legible over bright scenery, and an overlay the commander
+cannot read but has not noticed is worse than one they switched off deliberately.
+
+Verified by measurement across the four extremes: the background changes while
+text opacity stays at 1, text changes while the background stays at 0.72, and all
+four render at **identical dimensions** -- these are colour properties only, so no
+opacity change can move anything.
+
+Settings shows a live preview using the same two variables, so opacity can be
+judged without alt-tabbing into Elite.
+
+### Live Journal lifecycle
+
+One behaviour, chosen and documented rather than made configurable:
+
+- **Recent** (under five minutes): system, body, the entry, and how many entries
+  were recorded at that body.
+- **Older**: collapses to `N activities recorded`.
+
+It does not disappear, because an empty panel that used to have content reads as a
+bug; and it does not keep asserting something from half an hour ago, which is the
+stale-context problem this project has fixed once already.
+
+### Carrier jump: when a countdown ends
+
+Three signals end a pending jump, because one was not enough.
+
+| Signal | Meaning |
+|---|---|
+| `CarrierLocation` at the destination | Arrived |
+| `CarrierLocation` anywhere, after the departure time | No longer pending |
+| `CarrierJump` with a matching MarketID | The commander watched it happen |
+
+The second exists because of a real bug: clearing required an exact match with the
+destination, so a squadron carrier that arrived kept reading **DEPARTING**.
+Measured over 138 real requests, five reported a *different* system next -- the
+carrier had moved on again, or the report came from a later session. Past the
+departure time, whatever the carrier says about where it is, it is not still
+waiting to leave. Clearing then does not claim it arrived; it stops asserting a
+departure that is over.
+
+An unconfirmed departure stops displaying after **ten minutes**. 93% of real jumps
+confirm within five minutes of the stated departure (median: zero); past that the
+commander is almost certainly offline and confirmation may be hours away, so
+continuing to say "Departing" tells them nothing true.
+
+## Guidance in the overlay
+
+New CMDR Mode adds one line of explanation to a context, drawn from the rule's own
+`guidance.beginner`. Same facts, same resources -- one extra sentence saying what
+the mechanic is. Never an article: EDFM is the reference, and the overlay is over
+someone's game.

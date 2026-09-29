@@ -386,3 +386,31 @@ where resources actually open, in the user's browser.
 Each active context records the event that triggered it and that event's id, shown on
 the Context page (§27). When a context looks wrong, the first question — "what made
 this appear?" — is answerable without guessing.
+
+## Guidance levels
+
+A rule may carry `guidance`, shown only when the commander has chosen New CMDR
+Mode:
+
+```json
+{
+  "guidance": {
+    "topic": "exobiology",
+    "beginner": "Biological signals mean this body has organisms you can sample on foot."
+  }
+}
+```
+
+Declared on the rule rather than written into a React component, so it travels
+with the thing it explains -- a server rule set and a plugin get it for free, and
+nobody has to find the component that renders a context in order to explain one.
+
+`topic` is carried and not yet acted on. There are two levels and no per-topic
+preference today, but tagging from the start makes "explain exobiology but not
+mining" a settings change rather than a migration of every rule that exists by
+then.
+
+**The mode changes only how much is explained.** It never hides a feature, never
+changes a value, and never alters which facts are shown -- a setting that quietly
+disabled things would make "am I seeing everything?" unanswerable. Bounded to 240
+characters by the sanitiser, because this can appear over the game.

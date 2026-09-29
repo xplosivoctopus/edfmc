@@ -22,6 +22,8 @@ interface OverlayContext {
   subtitle: string | null;
   actions: readonly string[];
   note: string | null;
+  /** Beginner explanation. Sent always; drawn only in New CMDR mode. */
+  guidance: string | null;
   resources: ReadonlyArray<{ label: string; url: string }>;
 }
 
@@ -57,6 +59,22 @@ interface OverlayWidgets {
   missions: boolean;
   edfmNotes: boolean;
   carrierJump: boolean;
+  liveJournal: boolean;
+}
+
+interface OverlayAppearance {
+  backgroundOpacity: number;
+  textOpacity: number;
+}
+
+interface LiveJournalState {
+  title: string;
+  detail: string | null;
+  systemName: string | null;
+  bodyName: string | null;
+  occurredAt: string;
+  hereCount: number;
+  sessionCount: number;
 }
 
 interface OverlayState {
@@ -72,6 +90,9 @@ interface OverlayState {
   /** Other contexts true right now, title and subtitle only. */
   alsoActive: { title: string; subtitle: string | null }[];
   carrierJumps: OverlayCarrierJump[];
+  appearance: OverlayAppearance;
+  guidance: 'standard' | 'new-cmdr';
+  liveJournal: LiveJournalState | null;
   missions: OverlayMissions;
   widgets: OverlayWidgets;
 }
@@ -81,7 +102,7 @@ interface Point {
   y: number;
 }
 
-type WidgetId = 'context' | 'missions' | 'carrierJump';
+type WidgetId = 'context' | 'missions' | 'carrierJump' | 'liveJournal';
 
 const STORAGE_KEY = 'edfm.overlay.layout.v2';
 
@@ -90,6 +111,7 @@ const DEFAULT_LAYOUT: Record<WidgetId, Point> = {
   context: { x: 32, y: 32 },
   missions: { x: 32, y: 260 },
   carrierJump: { x: 32, y: 520 },
+  liveJournal: { x: 360, y: 32 },
 };
 
 /** Leave edit mode. The backend restores click-through and tells both windows. */
@@ -142,6 +164,56 @@ function CarrierJumpWidget({ jumps }: { jumps: OverlayCarrierJump[] }) {
   );
 }
 
+/**
+ * The newest thing recorded, and how much happened here.
+ *
+ * ## Lifecycle, chosen and documented
+ *
+ * Recent activity shows in full. After five minutes it collapses to a single
+ * summary line rather than disappearing or lingering: an overlay panel asserting
+ * something from half an hour ago is the stale-context problem this project has
+ * already fixed once, and an empty panel that used to have content reads as a
+ * bug.
+ *
+ * One behaviour, no setting. The state needed for "most recent entry" and
+ * "session summary" is already pushed, so offering a choice later is a settings
+ * change rather than a new payload.
+ */
+const LIVE_JOURNAL_FRESH_MS = 5 * 60 * 1000;
+
+function LiveJournalWidget({ journal }: { journal: LiveJournalState }) {
+  const [now, setNow] = useState(() => Date.now());
+
+  useEffect(() => {
+    // A minute is enough: the only decision is fresh versus collapsed.
+    const id = setInterval(() => setNow(Date.now()), 60_000);
+    return () => clearInterval(id);
+  }, []);
+
+  const at = Date.parse(journal.occurredAt);
+  const fresh = Number.isFinite(at) && now - at < LIVE_JOURNAL_FRESH_MS;
+
+  if (!fresh) {
+    return (
+      <div className="lj-collapsed">
+        {journal.sessionCount} {journal.sessionCount === 1 ? 'activity' : 'activities'} recorded
+      </div>
+    );
+  }
+
+  return (
+    <>
+      {journal.systemName && <div className="lj-place">{journal.systemName}</div>}
+      {journal.bodyName && <div className="lj-body">{journal.bodyName}</div>}
+      <div className="lj-title">{journal.title}</div>
+      {journal.detail && <div className="lj-detail">{journal.detail}</div>}
+      {journal.hereCount > 1 && (
+        <div className="lj-here">{journal.hereCount} recorded here</div>
+      )}
+    </>
+  );
+}
+
 function loadLayout(): Record<WidgetId, Point> {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
@@ -151,6 +223,7 @@ function loadLayout(): Record<WidgetId, Point> {
         context: valid(parsed.context) ?? DEFAULT_LAYOUT.context,
         missions: valid(parsed.missions) ?? DEFAULT_LAYOUT.missions,
         carrierJump: valid(parsed.carrierJump) ?? DEFAULT_LAYOUT.carrierJump,
+        liveJournal: valid(parsed.liveJournal) ?? DEFAULT_LAYOUT.liveJournal,
       };
     }
   } catch {
@@ -220,6 +293,20 @@ export default function Overlay() {
     <div
       ref={rootRef}
       className={`overlay-root${editing ? ' editing' : ''}`}
+      /*
+       * Appearance as two custom properties, set once here.
+       *
+       * Every widget inherits them, so a future widget is styled correctly by
+       * doing nothing, and a change is one assignment rather than a sweep
+       * through every panel. They affect colour only -- nothing here is a size,
+       * so changing them cannot move anything.
+       */
+      style={
+        {
+          '--overlay-bg-opacity': String(state?.appearance?.backgroundOpacity ?? 0.72),
+          '--overlay-text-opacity': String(state?.appearance?.textOpacity ?? 1),
+        } as React.CSSProperties
+      }
       // Focusable so Escape reaches the document while editing. -1 keeps it out of
       // the tab order, since the overlay is not a normal navigable surface.
       tabIndex={-1}
@@ -258,6 +345,14 @@ export default function Overlay() {
                 <div className="context">
                   <div className="context-title">{state.context.title}</div>
                   {state.context.subtitle && <div className="context-sub">{state.context.subtitle}</div>}
+                  {/*
+                    Beginner explanation. Same facts as Standard mode, with a
+                    sentence saying what the mechanic is -- never an article; the
+                    depth stays on EDFM.
+                  */}
+                  {state.guidance === 'new-cmdr' && state.context.guidance && (
+                    <div className="context-guidance">{state.context.guidance}</div>
+                  )}
                   {state.context.actions.length > 0 && (
                     <ul className="context-actions">
                       {state.context.actions.map((a) => (
@@ -315,6 +410,19 @@ export default function Overlay() {
 
       {/* Only rendered when a jump is actually scheduled: an empty countdown widget
           is pure clutter over a game window. */}
+      {/* Opt-in, and only when something has actually been recorded. */}
+      {widgets?.liveJournal === true && state?.liveJournal && (
+        <Widget
+          id="liveJournal"
+          title="Field Journal"
+          pos={layout.liveJournal}
+          editing={editing}
+          onMove={move}
+        >
+          <LiveJournalWidget journal={state.liveJournal} />
+        </Widget>
+      )}
+
       {(widgets?.carrierJump ?? true) &&
         state !== null &&
         (state.carrierJumps?.length ?? 0) > 0 && (

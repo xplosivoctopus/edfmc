@@ -47,7 +47,12 @@ body,
   padding: 0.625rem 0.75rem;
   border-radius: 8px;
   border: 1px solid var(--accent-line);
-  background: rgba(18, 18, 18, 0.72);
+  /*
+   * Background alpha is configurable; the colour is not. Falls back to the value
+   * that shipped before this was a setting, so an overlay looks unchanged until
+   * someone moves the slider.
+   */
+  background: rgba(18, 18, 18, var(--overlay-bg-opacity, 0.72));
   color: #ededed;
   /* Large enough to read at 4K without leaning in; §29 warns against tiny HUD text. */
   font-size: 0.9375rem;
@@ -166,6 +171,47 @@ body,
 
 /* Keep the widget clear of the banner when it is parked at the very top. */
 .overlay-root.editing .widget { margin-top: 2.25rem; }
+
+/*
+ * Text opacity, applied to the widget's contents rather than the widget.
+ *
+ * `opacity` on the panel itself would fade its background too, which is exactly
+ * the single "overall opacity" control this deliberately is not: a commander who
+ * wants a fainter panel almost never wants fainter text. Applied to direct
+ * children so the background stays out of it.
+ *
+ * Colour only. Nothing here is a size, so no opacity change can move anything.
+ */
+.widget > * {
+  opacity: var(--overlay-text-opacity, 1);
+}
+
+/* Beginner guidance. Present only in New CMDR mode; same facts, more words. */
+.context-guidance {
+  color: #c9c9c9;
+  font-size: 0.75rem;
+  line-height: 1.35;
+  margin-top: 0.25rem;
+  padding-left: 0.5rem;
+  border-left: 2px solid var(--accent-line);
+  overflow-wrap: anywhere;
+}
+
+/* ------------------------------------------------- field journal widget */
+
+.lj-place { color: #b9b9b9; font-size: 0.75rem; }
+.lj-body { color: var(--text-dim); font-size: 0.75rem; }
+.lj-title {
+  color: var(--accent);
+  font-weight: 600;
+  margin-top: 0.125rem;
+  overflow-wrap: anywhere;
+}
+.lj-detail { color: #d8d8d8; font-size: 0.8125rem; overflow-wrap: anywhere; }
+.lj-here { color: var(--text-faint); font-size: 0.6875rem; margin-top: 0.25rem; }
+
+/* The collapsed state, once the entry is no longer recent. */
+.lj-collapsed { color: var(--text-dim); font-size: 0.8125rem; }
 
 /* ------------------------------------------------------------- context */
 

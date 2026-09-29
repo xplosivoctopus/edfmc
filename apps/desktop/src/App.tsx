@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState, useSyncExternalStore } from 'react';
 import { isKnown, type CommanderState, type Known } from '@edfm/elite-journal';
 
-import { resourceUrl } from '@edfm/context';
+import { resourceUrl, type GuidanceMode } from '@edfm/context';
 import {
   explainMission,
   hasDeliveryProgress,
@@ -12,6 +12,7 @@ import {
 import { openUrl } from '@tauri-apps/plugin-opener';
 
 import { Logistics } from './Logistics';
+import { FirstRunGuidance, GuidanceChoice } from './Guidance';
 import { Journal } from './Journal';
 import { Research } from './Research';
 import { Contributions } from './Contributions';
@@ -23,6 +24,8 @@ import {
   onEliteWindow,
   countdownTo,
   overlayApi,
+  APPEARANCE_BOUNDS,
+  type OverlayAppearance,
   type OverlayCarrierJump,
   type DisplayModeInfo,
   type EliteWindowInfo,
@@ -120,6 +123,12 @@ export default function App() {
       </nav>
 
       <main className="main">
+        {/*
+          Asked once, before anything else, and only when it has never been
+          answered. Not a modal: it does not block the app, because a commander
+          who wants to get straight to their journal should be able to.
+        */}
+        {!snap.guidanceChosen && <FirstRunGuidance />}
         {section === 'Dashboard' && <Dashboard snap={snap} />}
         {section === 'Context' && <ContextPanel snap={snap} />}
         {section === 'Missions' && <MissionsPanel snap={snap} />}
@@ -637,6 +646,87 @@ function MissionList({
   );
 }
 
+/**
+ * One opacity slider.
+ *
+ * Shows the percentage as a number as well as a slider position: a handle
+ * somewhere along a track is not a value anyone can report or reproduce.
+ */
+function OpacityControl({
+  label,
+  hint,
+  value,
+  bounds,
+  onChange,
+}: {
+  label: string;
+  hint: string;
+  value: number;
+  bounds: { min: number; max: number };
+  onChange: (value: number) => void;
+}) {
+  const pct = Math.round(value * 100);
+  return (
+    <label className="opacity-control">
+      <span className="opacity-label">
+        {label}
+        <span className="opacity-value">{pct}%</span>
+      </span>
+      <input
+        type="range"
+        min={Math.round(bounds.min * 100)}
+        max={Math.round(bounds.max * 100)}
+        step={5}
+        value={pct}
+        aria-label={label}
+        // Live: the real overlay updates as this is dragged, so the commander is
+        // not alt-tabbing into Elite to evaluate every notch.
+        onChange={(e) => onChange(Number(e.target.value) / 100)}
+      />
+      <span className="field-hint">{hint}</span>
+    </label>
+  );
+}
+
+/**
+ * A sample of the overlay, using the real overlay variables.
+ *
+ * Exists so opacity can be judged without switching into the game. It is a
+ * sample, not a simulation: the panel behind it in Elite is arbitrary scenery,
+ * so this sits on a dark gradient and says so by being obviously a preview.
+ */
+function OverlayPreview({
+  appearance,
+  guidance,
+}: {
+  appearance: OverlayAppearance;
+  guidance: GuidanceMode;
+}) {
+  return (
+    <div className="overlay-preview" aria-label="Overlay appearance preview">
+      <div
+        className="overlay-preview-panel"
+        style={
+          {
+            '--overlay-bg-opacity': String(appearance.backgroundOpacity),
+            '--overlay-text-opacity': String(appearance.textOpacity),
+          } as React.CSSProperties
+        }
+      >
+        <div className="overlay-preview-title">◆ Current Context</div>
+        <div className="overlay-preview-heading">Biological signals</div>
+        <div className="overlay-preview-sub">3 biological signals detected</div>
+        {guidance === 'new-cmdr' && (
+          <div className="overlay-preview-guidance">
+            Biological signals mean this body has organisms you can sample on foot.
+          </div>
+        )}
+        <div className="overlay-preview-row">Wregoe XX-X d1-42 3 A</div>
+      </div>
+    </div>
+  );
+}
+
 function OverlayPanel() {
   const widgets = useSyncExternalStore(
     (cb) => companion.subscribe(cb),
@@ -653,6 +743,11 @@ function OverlayPanel() {
     (cb) => companion.subscribe(cb),
     () => companion.overlayHideWhenInactive,
   );
+  const snap = useSyncExternalStore(
+    (cb) => companion.subscribe(cb),
+    () => companion.snapshot(),
+  );
+  const appearance = snap.appearance;
   const [editing, setEditing] = useState(false);
   const [mode, setMode] = useState<DisplayModeInfo | null>(null);
   const [win, setWin] = useState<EliteWindowInfo | null>(null);
@@ -830,6 +925,25 @@ function OverlayPanel() {
             </span>
           </label>
 
+          <h3 className="subhead">Appearance</h3>
+          <OpacityControl
+            label="Background opacity"
+            hint="How solid the panels are. Text is unaffected."
+            value={appearance.backgroundOpacity}
+            bounds={APPEARANCE_BOUNDS.background}
+            onChange={(v) => void companion.setAppearance({ ...appearance, backgroundOpacity: v })}
+          />
+          <OpacityControl
+            label="Text opacity"
+            hint="Kept above a readable minimum, since faint text over bright scenery is unusable."
+            value={appearance.textOpacity}
+            bounds={APPEARANCE_BOUNDS.text}
+            onChange={(v) => void companion.setAppearance({ ...appearance, textOpacity: v })}
+          />
+          <OverlayPreview appearance={appearance} guidance={snap.guidance} />
+
+          <h3 className="subhead">Widgets</h3>
+
           <label className="check">
             <input
               type="checkbox"
@@ -872,6 +986,22 @@ function OverlayPanel() {
               </span>
             </span>
           </label>
+
+          <label className="check">
+            <input
+              type="checkbox"
+              checked={widgets.liveJournal}
+              onChange={(e) =>
+                void companion.setOverlayWidgets({ ...widgets, liveJournal: e.target.checked })
+              }
+            />
+            <span>
+              Live Journal{' '}
+              <span className="muted-inline">
+                — the newest thing recorded, collapsing to a count after five minutes
+              </span>
+            </span>
+          </label>
         </div>
         <p className="muted">
           The Missions widget shows the five soonest to expire. The full list, with
@@ -891,6 +1021,15 @@ function Settings({ snap }: { snap: Snap }) {
       <header className="page-head">
         <h1>Settings</h1>
       </header>
+
+      <section className="card">
+        <h2>Guidance</h2>
+        <p className="muted">
+          How much is explained as you play. This never changes which facts are shown, and
+          never hides a feature.
+        </p>
+        <GuidanceChoice />
+      </section>
 
       <section className="card">
         <h2>Journal folder</h2>

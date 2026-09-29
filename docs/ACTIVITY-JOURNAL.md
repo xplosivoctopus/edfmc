@@ -139,6 +139,15 @@ Never titles — those carry system names, body names and organism discoveries.
 
 ---
 
+## The Live Journal overlay widget
+
+The Journal screen is the history. The overlay widget is not a smaller copy of it
+-- it answers a different question: *what did I just record?*
+
+One entry, plus how many were recorded at the same body. Off by default, and it
+collapses to a count after five minutes. `docs/OVERLAY.md` has the lifecycle and
+why that shape was chosen.
+
 ## Deferred, explicitly
 
 - **Sessions.** Schema exists; no automatic grouping, because a boundary rule that

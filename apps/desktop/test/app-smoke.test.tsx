@@ -141,6 +141,44 @@ describe('application startup', () => {
     expect(container.textContent).toContain('never uploaded');
   });
 
+  it('asks for a guidance level on first run', async () => {
+    // Shown because nothing has ever been chosen -- which is distinct from
+    // having chosen Standard.
+    await mountApp();
+    const { companion } = await import('../src/lib/companion');
+    expect(companion.snapshot().guidanceChosen).toBe(false);
+    expect(container.textContent).toContain('Welcome to EDFM Companion');
+    expect(container.textContent).toContain('New CMDR Mode');
+  });
+
+  it('does not ask again once a level has been chosen', async () => {
+    await mountApp();
+    const { companion } = await import('../src/lib/companion');
+
+    await act(async () => {
+      await companion.setGuidanceMode('new-cmdr');
+    });
+
+    expect(companion.snapshot().guidanceChosen).toBe(true);
+    expect(companion.snapshot().guidance).toBe('new-cmdr');
+    expect(container.textContent).not.toContain('Welcome to EDFM Companion');
+  });
+
+  it('keeps every feature reachable in either guidance mode', async () => {
+    // Guidance changes explanation, never availability. A mode that hid things
+    // would make "am I seeing everything?" unanswerable.
+    await mountApp();
+    const { companion } = await import('../src/lib/companion');
+    const sections = () =>
+      [...container.querySelectorAll('nav button')].map((b) => b.textContent?.trim());
+
+    const standard = sections();
+    await act(async () => {
+      await companion.setGuidanceMode('new-cmdr');
+    });
+    expect(sections()).toEqual(standard);
+  });
+
   it('makes no network request during a cold start', async () => {
     // Verification is opt-in. A fresh install that has never consented must not
     // contact the API to find that out.

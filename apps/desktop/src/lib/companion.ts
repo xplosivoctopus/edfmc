@@ -92,6 +92,7 @@ import {
   type ActivityEntry,
   type ActivityGroup,
 } from '@edfm/activity';
+import { DEFAULT_GUIDANCE_MODE, type GuidanceMode } from '@edfm/context';
 import {
   backfillCarrierIdentities,
   backfillCarrierJumps,
@@ -103,6 +104,12 @@ import { policyFor, projectResources } from './spoiler.js';
 import {
   DEFAULT_WIDGETS,
   overlayApi,
+  APPEARANCE_BOUNDS,
+  DEFAULT_APPEARANCE,
+  clampNumber,
+  clampOpacity,
+  type LiveJournalState,
+  type OverlayAppearance,
   type OverlayCarrierJump,
   type OverlayMissionRow,
   type OverlayMissions,
@@ -221,6 +228,14 @@ export interface CompanionSnapshot {
   readonly carrierJumps: readonly OverlayCarrierJump[];
   /** The commander's field journal, newest first. Local only, never transmitted. */
   readonly activity: readonly ActivityGroup[];
+  /** How much explanation to show. Never changes which facts are shown. */
+  readonly guidance: GuidanceMode;
+  /**
+   * Null until the commander has chosen, which is what triggers the first-run
+   * prompt. Distinct from "they chose Standard".
+   */
+  readonly guidanceChosen: boolean;
+  readonly appearance: OverlayAppearance;
   readonly contextRuleVersion: number;
   readonly contextRuleSource: string;
   readonly missions: MissionView;
@@ -404,6 +419,13 @@ export class Companion {
    * everything; this is the working set, so a commander with years of history
    * does not pay for it on every render.
    */
+  /* --------------------------------------------------------- presentation */
+
+  private guidanceMode: GuidanceMode = DEFAULT_GUIDANCE_MODE;
+  /** Whether the commander has ever made the choice. Drives the first-run prompt. */
+  private guidanceChosen = false;
+  private appearance: OverlayAppearance = { ...DEFAULT_APPEARANCE };
+
   private readonly activity = new ActivityEngine({ commanderFid: null });
   private activityEntries: ActivityEntry[] = [];
   private static readonly ACTIVITY_IN_MEMORY = 500;
@@ -606,6 +628,9 @@ export class Companion {
         contexts: this.projectedContexts(),
         carrierJumps: this.projectCarrierJumps(),
         activity: groupActivity(this.activityEntries),
+        guidance: this.guidanceMode,
+        guidanceChosen: this.guidanceChosen,
+        appearance: this.appearance,
         contextRuleVersion: this.resolver.version,
         contextRuleSource: this.resolver.source,
         missions: this.missionView(),
@@ -713,6 +738,37 @@ export class Companion {
 
     // Read here with the other overlay settings; actually starting it happens at
     // the end of start(), once there is state worth pushing to it.
+    /*
+     * Guidance mode, and whether it was ever chosen.
+     *
+     * An existing installation must not be dropped into a first-run prompt for a
+     * setting that did not exist when they installed. So an unset mode is only
+     * treated as "never asked" when the settings table is otherwise empty --
+     * anything already stored means this is an upgrade, which silently takes the
+     * Standard default.
+     */
+    const storedGuidance = await this.getSetting('guidanceMode');
+    if (storedGuidance === 'standard' || storedGuidance === 'new-cmdr') {
+      this.guidanceMode = storedGuidance;
+      this.guidanceChosen = true;
+    } else {
+      this.guidanceMode = DEFAULT_GUIDANCE_MODE;
+      this.guidanceChosen = await this.hasAnySetting();
+    }
+
+    this.appearance = {
+      backgroundOpacity: clampOpacity(
+        await this.getSetting('overlayBackgroundOpacity'),
+        DEFAULT_APPEARANCE.backgroundOpacity,
+        APPEARANCE_BOUNDS.background,
+      ),
+      textOpacity: clampOpacity(
+        await this.getSetting('overlayTextOpacity'),
+        DEFAULT_APPEARANCE.textOpacity,
+        APPEARANCE_BOUNDS.text,
+      ),
+    };
+
     this.overlayEnabled = (await this.getSetting('overlayEnabled')) === 'true';
     // Defaults to true when never set, matching the checkbox's default.
     this.overlayHideInactive = (await this.getSetting('overlayHideInactive')) !== 'false';
@@ -965,7 +1021,17 @@ export class Companion {
    * countdown that has read "departing" since yesterday is noise.
    */
   private projectCarrierJumps(): OverlayCarrierJump[] {
-    const STALE_AFTER_MS = 60 * 60 * 1000;
+    /*
+     * How long an unconfirmed departure may keep saying "Departing".
+     *
+     * Was an hour, which was far too generous and is what left a jump showing
+     * long after it had arrived. Measured across 138 real requests: 93% are
+     * confirmed within five minutes of the stated departure, median zero. Past
+     * that the commander is almost certainly offline, and confirmation may not
+     * arrive for hours -- so continuing to assert a departure tells them nothing
+     * true, and quietly stopping is the honest end.
+     */
+    const STALE_AFTER_MS = 10 * 60 * 1000;
     const now = Date.now();
 
     return Object.values(this.state.carrierJumps)
@@ -1065,12 +1131,18 @@ export class Companion {
           subtitle: c.subtitle,
         })),
         carrierJumps: this.projectCarrierJumps(),
+        appearance: this.appearance,
+        guidance: this.guidanceMode,
+        liveJournal: this.projectLiveJournal(),
         context: top
           ? {
               title: top.title,
               subtitle: top.subtitle,
               actions: top.rule.actions ?? [],
               note: top.rule.note ?? null,
+              // Sent always; the overlay decides whether to draw it based on the
+              // mode, so changing the mode does not need a fresh journal event.
+              guidance: top.rule.guidance?.beginner ?? null,
               resources: top.rule.resources
                 .map((r) => ({ label: r.label, url: resourceUrl(r) }))
                 .filter((r): r is { label: string; url: string } => r.url !== null)
@@ -1084,6 +1156,50 @@ export class Companion {
   /** Widgets the overlay should draw. Persisted, and pushed on every update. */
   get overlayWidgets(): OverlayWidgets {
     return this.widgets;
+  }
+
+  /**
+   * Record the commander's guidance choice.
+   *
+   * Writing it is what dismisses the first-run prompt, so choosing Standard --
+   * the default -- still counts as choosing.
+   */
+  async setGuidanceMode(mode: GuidanceMode): Promise<void> {
+    this.guidanceMode = mode;
+    this.guidanceChosen = true;
+    this.notify();
+    this.pushOverlayState();
+    await this.setSetting('guidanceMode', mode);
+  }
+
+  /**
+   * Overlay appearance.
+   *
+   * Pushed before it is persisted, so the slider moves the real overlay as it is
+   * dragged rather than after a database round trip.
+   */
+  async setAppearance(appearance: OverlayAppearance): Promise<void> {
+    this.appearance = {
+      backgroundOpacity: clampNumber(appearance.backgroundOpacity, APPEARANCE_BOUNDS.background),
+      textOpacity: clampNumber(appearance.textOpacity, APPEARANCE_BOUNDS.text),
+    };
+    this.notify();
+    this.pushOverlayState();
+    await this.setSetting('overlayBackgroundOpacity', String(this.appearance.backgroundOpacity));
+    await this.setSetting('overlayTextOpacity', String(this.appearance.textOpacity));
+  }
+
+  /** Whether anything has ever been written to settings. See the guidance load. */
+  private async hasAnySetting(): Promise<boolean> {
+    if (!this.db) return false;
+    try {
+      const rows = await this.db.select<Array<{ n: number }>>(
+        'SELECT COUNT(*) AS n FROM settings',
+      );
+      return (rows[0]?.n ?? 0) > 0;
+    } catch {
+      return false;
+    }
   }
 
   async setOverlayWidgets(widgets: OverlayWidgets): Promise<void> {
@@ -1466,6 +1582,34 @@ export class Companion {
   }
 
 
+
+  /**
+   * The newest activity, for the overlay.
+   *
+   * One entry plus two counts. The overlay answers "what did I just record";
+   * reading back through history is what the Journal screen is for, and a
+   * scrollable list over a game would be neither.
+   */
+  private projectLiveJournal(): LiveJournalState | null {
+    const newest = this.activityEntries[0];
+    if (!newest) return null;
+
+    // How much happened at this same body -- the number a commander actually
+    // wants while working one: "2 species recorded here".
+    const hereCount = this.activityEntries.filter(
+      (e) => e.bodyName === newest.bodyName && e.systemName === newest.systemName,
+    ).length;
+
+    return {
+      title: newest.title,
+      detail: newest.detail,
+      systemName: newest.systemName,
+      bodyName: newest.bodyName,
+      occurredAt: newest.occurredAt,
+      hereCount,
+      sessionCount: this.activityEntries.length,
+    };
+  }
 
   /* -------------------------------------------------- activity journal */
 

@@ -235,7 +235,13 @@ export function sanitise(ruleSet: ContextRuleSet): ContextRuleSet {
     if (typeof rule.title !== 'string' || !rule.when) continue;
 
     seen.add(rule.id);
-    const { actions: rawActions, note: rawNote, endsOn: rawEndsOn, ...restRule } = rule;
+    const {
+      actions: rawActions,
+      note: rawNote,
+      endsOn: rawEndsOn,
+      guidance: rawGuidance,
+      ...restRule
+    } = rule;
 
     // Present only when there is something to show — exactOptionalPropertyTypes
     // forbids `actions: undefined`, and an absent field is the correct signal
@@ -247,6 +253,22 @@ export function sanitise(ruleSet: ContextRuleSet): ContextRuleSet {
           .map((a) => a.slice(0, RULE_LIMITS.maxStringLength))
       : undefined;
     const note = typeof rawNote === 'string' ? rawNote.slice(0, RULE_LIMITS.maxStringLength) : undefined;
+
+    // Guidance is untrusted text drawn over a game. Bounded like everything else
+    // a rule set supplies, and dropped entirely if it carries nothing usable.
+    let guidance: { topic?: string; beginner?: string } | undefined;
+    if (rawGuidance !== null && typeof rawGuidance === 'object' && !Array.isArray(rawGuidance)) {
+      const g = rawGuidance as Record<string, unknown>;
+      const beginner =
+        typeof g['beginner'] === 'string'
+          ? g['beginner'].slice(0, RULE_LIMITS.maxGuidanceChars)
+          : undefined;
+      const topic =
+        typeof g['topic'] === 'string' ? g['topic'].slice(0, RULE_LIMITS.maxStringLength) : undefined;
+      if (beginner || topic) {
+        guidance = { ...(topic ? { topic } : {}), ...(beginner ? { beginner } : {}) };
+      }
+    }
 
     const endsOn = Array.isArray(rawEndsOn)
       ? rawEndsOn
@@ -267,6 +289,7 @@ export function sanitise(ruleSet: ContextRuleSet): ContextRuleSet {
       ...(actions && actions.length > 0 ? { actions } : {}),
       ...(note ? { note } : {}),
       ...(endsOn && endsOn.length > 0 ? { endsOn } : {}),
+      ...(guidance ? { guidance } : {}),
     });
   }
 

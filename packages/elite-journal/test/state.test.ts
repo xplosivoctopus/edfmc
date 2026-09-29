@@ -485,3 +485,69 @@ describe('carrier jump scheduling', () => {
     expect(Object.keys(s.carrierJumps)).toHaveLength(0);
   });
 });
+
+describe('a carrier jump must be able to end', () => {
+  const OWN = 3703420416;
+  const SQUADRON = 3715965184;
+
+  const request = (cid: number, dest: string, departs: string, at: string) =>
+    `{ "timestamp":"${at}", "event":"CarrierJumpRequest", "CarrierType":"FleetCarrier", "CarrierID":${cid}, "SystemName":"${dest}", "SystemAddress":1, "BodyID":1, "DepartureTime":"${departs}" }`;
+
+  const location = (cid: number, system: string, at: string) =>
+    `{ "timestamp":"${at}", "event":"CarrierLocation", "CarrierType":"FleetCarrier", "CarrierID":${cid}, "StarSystem":"${system}", "SystemAddress":1, "BodyID":1 }`;
+
+  it('clears when the carrier reports the destination', () => {
+    const s = initialState();
+    feed(s, request(OWN, 'Leesti', '2026-09-29T12:15:00Z', '2026-09-29T12:00:00Z'));
+    feed(s, location(OWN, 'Leesti', '2026-09-29T12:16:00Z'));
+    expect(s.carrierJumps[OWN]).toBeUndefined();
+  });
+
+  it('clears when the carrier reports ANY location after departure', () => {
+    /*
+     * The reported bug. A squadron carrier arrived and the overlay kept saying
+     * DEPARTING, because clearing required the next location to match the
+     * destination exactly. Measured: of 138 real requests, five reported a
+     * different system next -- the carrier had moved on, or the report came from
+     * a later session.
+     *
+     * Past the departure time, whatever the carrier says about where it is, it
+     * is not still waiting to leave.
+     */
+    const s = initialState();
+    feed(s, request(SQUADRON, 'Leesti', '2026-09-29T12:15:00Z', '2026-09-29T12:00:00Z'));
+    feed(s, location(SQUADRON, 'Somewhere Else', '2026-09-29T12:20:00Z'));
+    expect(s.carrierJumps[SQUADRON]).toBeUndefined();
+  });
+
+  it('keeps the jump pending when a location arrives BEFORE departure', () => {
+    // Before it leaves, a non-matching location is just the carrier sitting
+    // where it already was. Clearing here would delete a live countdown.
+    const s = initialState();
+    feed(s, request(SQUADRON, 'Leesti', '2026-09-29T12:15:00Z', '2026-09-29T12:00:00Z'));
+    feed(s, location(SQUADRON, 'Origin System', '2026-09-29T12:05:00Z'));
+    expect(s.carrierJumps[SQUADRON]).toBeDefined();
+  });
+
+  it('clears when the commander is aboard and watches it jump', () => {
+    // CarrierJump fires only when aboard and carries no CarrierID -- but its
+    // MarketID is the carrier id, and 53 of 73 real events carry one.
+    const s = initialState();
+    feed(s, request(OWN, 'Leesti', '2026-09-29T12:15:00Z', '2026-09-29T12:00:00Z'));
+    feed(
+      s,
+      `{ "timestamp":"2026-09-29T12:15:30Z", "event":"CarrierJump", "Docked":true, "StarSystem":"Leesti", "SystemAddress":1, "StarPos":[1,2,3], "SystemAllegiance":"Independent", "SystemEconomy":"$economy_Carrier;", "SystemGovernment":"$government_Carrier;", "SystemSecurity":"$SYSTEM_SECURITY_low;", "Population":0, "Body":"Leesti A", "BodyID":1, "BodyType":"Star", "StationName":"HBN-TXN", "StationType":"FleetCarrier", "MarketID":${OWN} }`,
+    );
+    expect(s.carrierJumps[OWN]).toBeUndefined();
+  });
+
+  it('does not clear a different carrier', () => {
+    // Two carriers, one arrives. The other's countdown must survive.
+    const s = initialState();
+    feed(s, request(OWN, 'Leesti', '2026-09-29T12:15:00Z', '2026-09-29T12:00:00Z'));
+    feed(s, request(SQUADRON, 'Deciat', '2026-09-29T12:20:00Z', '2026-09-29T12:00:00Z'));
+    feed(s, location(OWN, 'Leesti', '2026-09-29T12:16:00Z'));
+    expect(s.carrierJumps[OWN]).toBeUndefined();
+    expect(s.carrierJumps[SQUADRON]).toBeDefined();
+  });
+});

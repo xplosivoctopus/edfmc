@@ -6,6 +6,7 @@
  */
 
 import { invoke } from '@tauri-apps/api/core';
+import type { GuidanceMode } from '@edfm/context';
 import { listen } from '@tauri-apps/api/event';
 
 export interface EliteWindowInfo {
@@ -39,6 +40,8 @@ export interface OverlayContext {
   subtitle: string | null;
   actions: readonly string[];
   note: string | null;
+  /** Beginner explanation. Sent always; drawn only in New CMDR mode. */
+  guidance: string | null;
   resources: ReadonlyArray<{ label: string; url: string }>;
 }
 
@@ -46,10 +49,24 @@ export interface OverlayContext {
 export interface OverlayWidgets {
   context: boolean;
   missions: boolean;
-  /** Whether mission rows carry EDFM's editorial guidance. */
+  /**
+   * Whether mission rows carry EDFM's editorial guidance.
+   *
+   * A sub-option of Missions, not a panel of its own -- it has no position, no
+   * frame and nothing to drag. The settings UI disables it when Missions is off,
+   * because a toggle that cannot do anything is worse than no toggle.
+   */
   edfmNotes: boolean;
   /** Countdown to a scheduled jump on one of the commander's own carriers. */
   carrierJump: boolean;
+  /**
+   * Recent activity from the field journal.
+   *
+   * Off by default. Every other widget answers "what is true now"; this one is
+   * the newest thing recorded, which is useful to some commanders and clutter to
+   * others -- so it is opt-in rather than something to discover and turn off.
+   */
+  liveJournal: boolean;
 }
 
 export const DEFAULT_WIDGETS: OverlayWidgets = {
@@ -57,7 +74,78 @@ export const DEFAULT_WIDGETS: OverlayWidgets = {
   missions: true,
   edfmNotes: true,
   carrierJump: true,
+  liveJournal: false,
 };
+
+/**
+ * Overlay appearance, as fractions rather than percentages.
+ *
+ * Background and text are separate on purpose. One control that dims both is the
+ * thing that makes an overlay unreadable: a commander who wants a fainter panel
+ * almost never wants fainter text.
+ */
+export interface OverlayAppearance {
+  /** Panel background alpha. */
+  readonly backgroundOpacity: number;
+  /** Text and icon alpha. */
+  readonly textOpacity: number;
+}
+
+/**
+ * Bounds.
+ *
+ * Background may go to fully transparent -- text on bare game imagery is a real
+ * preference, and the text keeps its own shadow.
+ *
+ * Text may not. Below roughly a third it stops being legible over bright
+ * scenery, and an overlay the commander cannot read but has not noticed is
+ * worse than one they turned off deliberately.
+ */
+export const APPEARANCE_BOUNDS = {
+  background: { min: 0, max: 1 },
+  text: { min: 0.35, max: 1 },
+} as const;
+
+/** Matches the styling that shipped before this was configurable. */
+export const DEFAULT_APPEARANCE: OverlayAppearance = {
+  backgroundOpacity: 0.72,
+  textOpacity: 1,
+};
+
+export function clampNumber(value: number, bounds: { min: number; max: number }): number {
+  if (!Number.isFinite(value)) return bounds.max;
+  return Math.min(bounds.max, Math.max(bounds.min, value));
+}
+
+/** Parse a stored setting, falling back rather than letting a bad row blank the overlay. */
+export function clampOpacity(
+  stored: string | null,
+  fallback: number,
+  bounds: { min: number; max: number },
+): number {
+  if (stored === null) return fallback;
+  const n = Number(stored);
+  return Number.isFinite(n) ? clampNumber(n, bounds) : fallback;
+}
+
+/**
+ * What the Live Journal widget shows.
+ *
+ * Deliberately one entry plus a count, not a history. The overlay answers "what
+ * did I just record"; the Journal screen is where a commander reads back.
+ */
+export interface LiveJournalState {
+  readonly title: string;
+  readonly detail: string | null;
+  readonly systemName: string | null;
+  readonly bodyName: string | null;
+  /** ISO 8601. The overlay decides for itself when this has gone stale. */
+  readonly occurredAt: string;
+  /** How many entries were recorded at this same body. */
+  readonly hereCount: number;
+  /** Total recorded since the app started, for the collapsed state. */
+  readonly sessionCount: number;
+}
 
 /** A scheduled jump for one of the commander's own carriers. */
 export interface OverlayCarrierJump {
@@ -153,6 +241,11 @@ export interface OverlayPushState {
    */
   alsoActive: { title: string; subtitle: string | null }[];
   carrierJumps: OverlayCarrierJump[];
+  appearance: OverlayAppearance;
+  /** Explanation level. Never changes which facts the overlay shows. */
+  guidance: GuidanceMode;
+  /** Newest recorded activity, or null. See the Live Journal widget. */
+  liveJournal: LiveJournalState | null;
   missions: OverlayMissions;
   widgets: OverlayWidgets;
 }

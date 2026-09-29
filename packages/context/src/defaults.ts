@@ -40,6 +40,11 @@ export const BUNDLED_RULES: ContextRuleSet = {
       ttlSeconds: 180,
       // Over the moment it resolves: escaped, back in supercruise, docked, jumped, or dead.
       endsOn: ['EscapeInterdiction', 'SupercruiseEntry', 'Docked', 'FSDJump', 'Died'],
+      guidance: {
+        topic: 'navigation',
+        beginner:
+          'An interdiction drags you out of supercruise. You can fight it or submit; submitting is often safer.',
+      },
       resources: [{ label: 'Frame Shift Drive Interdictor', page: 'Frame Shift Drive Interdictor' }],
       actions: [
         'Follow the blue circle to fight the interdiction.',
@@ -101,6 +106,11 @@ export const BUNDLED_RULES: ContextRuleSet = {
        * the ring; only this one was wrong.
        */
       endsOn: ['FSDJump', 'Docked', 'SellOrganicData'],
+      guidance: {
+        topic: 'exobiology',
+        beginner:
+          'Three samples of the same species are needed, taken a short distance apart. The third completes it.',
+      },
       resources: [{ label: 'Exobiology', page: 'Exobiology' }],
     },
     /*
@@ -130,6 +140,11 @@ export const BUNDLED_RULES: ContextRuleSet = {
       },
       priority: 55,
       ttlSeconds: 1800,
+      guidance: {
+        topic: 'exobiology',
+        beginner:
+          'Vista Genomics is the only place exobiology data can be sold, and it is lost if you are destroyed first.',
+      },
       resources: [{ label: 'Exobiology', page: 'Exobiology' }],
     },
 
@@ -226,6 +241,11 @@ export const BUNDLED_RULES: ContextRuleSet = {
       // the intent rather than relying on it.
       priority: 58,
       ttlSeconds: 1800,
+      guidance: {
+        topic: 'engineering',
+        beginner:
+          'Material Traders swap engineering materials within one category. This one handles Encoded data.',
+      },
       resources: [
         {
           label: 'Material Traders',
@@ -249,6 +269,11 @@ export const BUNDLED_RULES: ContextRuleSet = {
       // the intent rather than relying on it.
       priority: 58,
       ttlSeconds: 1800,
+      guidance: {
+        topic: 'engineering',
+        beginner:
+          'Material Traders swap engineering materials within one category. This one handles Raw elements.',
+      },
       resources: [
         {
           label: 'Material Traders',
@@ -272,6 +297,11 @@ export const BUNDLED_RULES: ContextRuleSet = {
       // the intent rather than relying on it.
       priority: 58,
       ttlSeconds: 1800,
+      guidance: {
+        topic: 'engineering',
+        beginner:
+          'Material Traders swap engineering materials within one category. This one handles Manufactured components.',
+      },
       resources: [
         {
           label: 'Material Traders',
@@ -350,6 +380,11 @@ export const BUNDLED_RULES: ContextRuleSet = {
       ttlSeconds: 600,
       // Leaving the ring ends the mining session.
       endsOn: ['Docked', 'FSDJump', 'SupercruiseEntry'],
+      guidance: {
+        topic: 'mining',
+        beginner:
+          'Hotspots mark where a mineral is most common in this ring. Prospect asteroids inside one to find it.',
+      },
       resources: [
         { label: 'Mining Hotspot', page: 'Mining Hotspot' },
         { label: 'How to Find a Mining Hotspot', page: 'How to Find a Mining Hotspot' },
@@ -386,6 +421,11 @@ export const BUNDLED_RULES: ContextRuleSet = {
       // Scanning and landing take a while, and the body stays interesting for as
       // long as the commander is in the system. Leaving it is what ends this.
       endsOn: ['FSDJump', 'Docked'],
+      guidance: {
+        topic: 'exobiology',
+        beginner:
+          'Biological signals mean this body has organisms you can sample on foot with an Artemis suit and a Genetic Sampler.',
+      },
       resources: [
         { label: 'Exobiology', page: 'Exobiology' },
         { label: 'Detailed Surface Scanner', page: 'Detailed Surface Scanner' },
