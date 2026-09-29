@@ -67,7 +67,27 @@ describe('capabilities', () => {
 
     expect(http, 'the main window needs scoped http:default').toBeDefined();
     const allow = http!['allow'] as Array<{ url: string }>;
-    expect(allow).toEqual([{ url: `${API_ORIGIN}/*` }]);
+    // Exactly two destinations, both named. The EDDN one is the community relay
+    // and is deliberately the full path rather than a wildcard, so the capability
+    // cannot be used to reach anything else on that host.
+    expect(allow).toEqual([
+      { url: `${API_ORIGIN}/*` },
+      { url: 'https://eddn.edcd.io:4430/upload/' },
+    ]);
+  });
+
+  it('never grants a wildcard host', () => {
+    const main = json(join(dir, 'default.json'));
+    const http = (main['permissions'] as unknown[]).find(
+      (p) =>
+        typeof p === 'object' && p !== null && (p as Record<string, unknown>)['identifier'] === 'http:default',
+    ) as Record<string, unknown>;
+    for (const entry of http['allow'] as Array<{ url: string }>) {
+      expect(entry.url.startsWith('https://'), entry.url).toBe(true);
+      // A wildcard host would make the allowlist decorative.
+      expect(entry.url).not.toMatch(/^https:\/\/\*/);
+      expect(entry.url).not.toBe('https://*/*');
+    }
   });
 
   it('never grants a bare http permission without a scope', () => {

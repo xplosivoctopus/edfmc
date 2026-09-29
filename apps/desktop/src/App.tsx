@@ -13,6 +13,7 @@ import { openUrl } from '@tauri-apps/plugin-opener';
 
 import { Logistics } from './Logistics';
 import { FirstRunGuidance, GuidanceChoice } from './Guidance';
+import { Integrations } from './Integrations';
 import { Journal } from './Journal';
 import { Research } from './Research';
 import { Contributions } from './Contributions';
@@ -55,6 +56,7 @@ const SECTIONS = [
   'Journal',
   'Research',
   'Contributions',
+  'Integrations',
   'Plugins',
   'Settings',
   'Diagnostics',
@@ -70,6 +72,7 @@ const IMPLEMENTED: ReadonlySet<Section> = new Set<Section>([
   'Journal',
   'Research',
   'Contributions',
+  'Integrations',
   'Plugins',
   'Settings',
   'Diagnostics',
@@ -137,6 +140,7 @@ export default function App() {
         {section === 'Journal' && <Journal snap={snap} />}
         {section === 'Research' && <Research snap={snap} />}
         {section === 'Contributions' && <Contributions snap={snap} />}
+        {section === 'Integrations' && <Integrations snap={snap} />}
         {section === 'Plugins' && <PluginsScreen snap={snap} />}
         {section === 'Settings' && <Settings snap={snap} />}
         {section === 'Diagnostics' && <Diagnostics snap={snap} />}

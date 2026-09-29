@@ -86,6 +86,7 @@ import {
 
 import { logger } from './logger.js';
 import { httpFetch } from './http.js';
+import { credentialPresent } from './credentials.js';
 import {
   ActivityEngine,
   groupActivity,
@@ -93,6 +94,7 @@ import {
   type ActivityGroup,
 } from '@edfm/activity';
 import { DEFAULT_GUIDANCE_MODE, type GuidanceMode } from '@edfm/context';
+import { INTEGRATIONS, type IntegrationId } from '@edfm/integrations';
 import {
   backfillCarrierIdentities,
   backfillCarrierJumps,
@@ -236,6 +238,15 @@ export interface CompanionSnapshot {
    */
   readonly guidanceChosen: boolean;
   readonly appearance: OverlayAppearance;
+  /**
+   * Per-integration state: enabled, and whether a credential exists. Never the
+   * credential itself, which cannot reach JavaScript at all.
+   */
+  readonly integrations: Readonly<
+    Record<IntegrationId, { readonly enabled: boolean; readonly hasCredential: boolean }>
+  >;
+  /** Bound setter, so the screen needs no import of the companion singleton. */
+  readonly setIntegrationEnabled: (id: IntegrationId, enabled: boolean) => Promise<void>;
   readonly contextRuleVersion: number;
   readonly contextRuleSource: string;
   readonly missions: MissionView;
@@ -425,6 +436,37 @@ export class Companion {
   /** Whether the commander has ever made the choice. Drives the first-run prompt. */
   private guidanceChosen = false;
   private appearance: OverlayAppearance = { ...DEFAULT_APPEARANCE };
+
+  /**
+   * Integration state.
+   *
+   * Every integration starts off. Nothing contacts an external service until the
+   * commander switches it on, which is asserted by a test rather than left as an
+   * intention.
+   */
+  private integrationState: Record<IntegrationId, { enabled: boolean; hasCredential: boolean }> = {
+    eddn: { enabled: false, hasCredential: false },
+    edsm: { enabled: false, hasCredential: false },
+    inara: { enabled: false, hasCredential: false },
+    edastro: { enabled: false, hasCredential: false },
+  };
+
+  /**
+   * Turn an integration on or off.
+   *
+   * Bound so it can travel through the snapshot to a screen without that screen
+   * reaching for the singleton. Refuses an integration that is not built, so a
+   * UI bug cannot make one appear active.
+   */
+  readonly setIntegrationEnabled = async (id: IntegrationId, enabled: boolean): Promise<void> => {
+    if (!INTEGRATIONS[id]?.implemented) return;
+    this.integrationState = {
+      ...this.integrationState,
+      [id]: { ...this.integrationState[id], enabled },
+    };
+    this.notify();
+    await this.setSetting(`integration.${id}.enabled`, String(enabled));
+  };
 
   private readonly activity = new ActivityEngine({ commanderFid: null });
   private activityEntries: ActivityEntry[] = [];
@@ -631,6 +673,8 @@ export class Companion {
         guidance: this.guidanceMode,
         guidanceChosen: this.guidanceChosen,
         appearance: this.appearance,
+        integrations: this.integrationState,
+        setIntegrationEnabled: this.setIntegrationEnabled,
         contextRuleVersion: this.resolver.version,
         contextRuleSource: this.resolver.source,
         missions: this.missionView(),
@@ -768,6 +812,14 @@ export class Companion {
         APPEARANCE_BOUNDS.text,
       ),
     };
+
+    // Integration switches. Absent means off, which is what every integration
+    // ships as.
+    for (const id of Object.keys(this.integrationState) as IntegrationId[]) {
+      const enabled = (await this.getSetting(`integration.${id}.enabled`)) === 'true';
+      const hasCredential = await credentialPresent(id);
+      this.integrationState = { ...this.integrationState, [id]: { enabled, hasCredential } };
+    }
 
     this.overlayEnabled = (await this.getSetting('overlayEnabled')) === 'true';
     // Defaults to true when never set, matching the checkbox's default.

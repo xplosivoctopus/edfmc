@@ -201,3 +201,46 @@ describe('snapshot identity', () => {
     expect(c.snapshot()).not.toBe(before);
   });
 });
+
+describe('integrations', () => {
+  it('starts every integration switched off', () => {
+    // The default that matters. Nothing reaches an external service until the
+    // commander asks for it.
+    const snap = new Companion().snapshot();
+    for (const id of ['eddn', 'edsm', 'inara', 'edastro'] as const) {
+      expect(snap.integrations[id].enabled, id).toBe(false);
+    }
+  });
+
+  it('refuses to enable an integration that is not built', () => {
+    // A switch that appears to work while nothing is sent is worse than one that
+    // says it is unfinished.
+    const c = new Companion();
+    for (const id of ['edsm', 'inara', 'edastro'] as const) {
+      void c.setIntegrationEnabled(id, true);
+      expect(c.snapshot().integrations[id].enabled, id).toBe(false);
+    }
+  });
+
+  it('enables the one integration that is built', () => {
+    const c = new Companion();
+    void c.setIntegrationEnabled('eddn', true);
+    expect(c.snapshot().integrations.eddn.enabled).toBe(true);
+  });
+
+  it('never exposes a credential through the snapshot', () => {
+    // Only whether one exists. The value cannot reach JavaScript at all -- there
+    // is no command that reads one back.
+    const snap = new Companion().snapshot();
+    for (const id of ['eddn', 'edsm', 'inara', 'edastro'] as const) {
+      expect(Object.keys(snap.integrations[id]).sort()).toEqual(['enabled', 'hasCredential']);
+    }
+    expect(JSON.stringify(snap.integrations)).not.toContain('secret');
+    expect(JSON.stringify(snap.integrations)).not.toContain('apiKey');
+  });
+
+  it('keeps snapshot identity stable with integrations in the store', () => {
+    const c = new Companion();
+    expect(c.snapshot().integrations).toBe(c.snapshot().integrations);
+  });
+});

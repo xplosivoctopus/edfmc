@@ -19,6 +19,9 @@
       "allow": [
         {
           "url": "https://api.edfieldmanual.com/*"
+        },
+        {
+          "url": "https://eddn.edcd.io:4430/upload/"
         }
       ]
     }

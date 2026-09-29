@@ -19,6 +19,14 @@ tauri-plugin-opener = "2"
 # charset transcoding and a cookie jar; this client talks JSON to one stateless
 # API over TLS. native-tls uses schannel, the TLS stack Windows already has, and
 # system-proxy is kept so a commander behind a corporate proxy still works.
+# OS-backed credential storage: Windows Credential Manager via the native
+# backend. See src/credentials.rs for why this rather than Stronghold or the
+# settings table.
+keyring = { version = "4", default-features = false, features = [
+    "v1",
+    "windows-native-keyring-store",
+] }
+
 tauri-plugin-http = { version = "2", default-features = false, features = [
     "native-tls",
     "system-proxy",

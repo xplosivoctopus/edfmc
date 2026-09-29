@@ -5,6 +5,7 @@
 //! normalization and state live in TypeScript so that replay and live ingestion run
 //! the identical pipeline (see docs/ARCHITECTURE.md §2.2).
 
+mod credentials;
 mod journal;
 mod overlay;
 mod plugins;
@@ -523,6 +524,9 @@ pub fn run() {
             journal::journal_watch,
             journal::journal_unwatch,
             overlay::elite_window_info,
+            credentials::credential_set,
+            credentials::credential_present,
+            credentials::credential_clear,
             plugins::plugins_dir,
             plugins::plugins_read,
             plugins::plugins_open_folder,
