@@ -452,6 +452,25 @@ export class Companion {
   };
 
   /**
+   * Load integration switches for the active commander.
+   *
+   * Per commander, because an integration is a link to *an account*: CMDR
+   * Sythan's EDSM key must never receive CMDR AltOne's flight log. Until a
+   * commander is known, everything reads as off -- which is also what happens
+   * when the owner cannot be established, and is the safe answer.
+   */
+  private async loadIntegrationState(): Promise<void> {
+    const fid = this.discoveryFid;
+    for (const id of Object.keys(this.integrationState) as IntegrationId[]) {
+      const enabled =
+        fid !== null && (await this.getSetting(`integration.${id}.${fid}.enabled`)) === 'true';
+      const hasCredential = await credentialPresent(id);
+      this.integrationState = { ...this.integrationState, [id]: { enabled, hasCredential } };
+    }
+    this.notify();
+  }
+
+  /**
    * Turn an integration on or off.
    *
    * Bound so it can travel through the snapshot to a screen without that screen
@@ -465,7 +484,12 @@ export class Companion {
       [id]: { ...this.integrationState[id], enabled },
     };
     this.notify();
-    await this.setSetting(`integration.${id}.enabled`, String(enabled));
+    // Keyed by commander: the same machine may have one commander contributing
+    // and another not, and neither choice may leak into the other.
+    const fid = this.discoveryFid;
+    if (fid !== null) {
+      await this.setSetting(`integration.${id}.${fid}.enabled`, String(enabled));
+    }
   };
 
   private readonly activity = new ActivityEngine({ commanderFid: null });
@@ -813,13 +837,7 @@ export class Companion {
       ),
     };
 
-    // Integration switches. Absent means off, which is what every integration
-    // ships as.
-    for (const id of Object.keys(this.integrationState) as IntegrationId[]) {
-      const enabled = (await this.getSetting(`integration.${id}.enabled`)) === 'true';
-      const hasCredential = await credentialPresent(id);
-      this.integrationState = { ...this.integrationState, [id]: { enabled, hasCredential } };
-    }
+    await this.loadIntegrationState();
 
     this.overlayEnabled = (await this.getSetting('overlayEnabled')) === 'true';
     // Defaults to true when never set, matching the checkbox's default.
@@ -1415,6 +1433,26 @@ export class Companion {
     this.activityEntries = [];
     await this.loadActivity(fid);
 
+    /*
+     * Missions and colonisation sites are personal too, and were not swapped.
+     * A second commander on the same machine inherited the first one's
+     * outstanding missions and construction requirements -- their cargo owed,
+     * their deadlines, their sites.
+     *
+     * Cleared before loading rather than merged, so nothing from the outgoing
+     * commander can survive into the incoming one's view.
+     */
+    this.missions.load([]);
+    this.sites.clear();
+    await this.loadMissions();
+    await this.loadSites();
+    this.missionsDirty = false;
+    this.sitesDirty = false;
+
+    // Integrations belong to the commander whose account they are linked to.
+    // Reloaded so one commander's switches never apply to another's data.
+    await this.loadIntegrationState();
+
     logger.info('discovery', 'Commander changed; discovery state swapped', {
       // FIDs identify a person's account; only whether one was present is logged.
       hadPrevious: previous !== null,
@@ -1467,7 +1505,19 @@ export class Companion {
   private async loadMissions(): Promise<void> {
     if (!this.db) return;
     try {
-      const rows = await this.db.select<MissionRow[]>('SELECT * FROM missions');
+      /*
+       * Scoped to the commander, and to rows that predate the scoping.
+       *
+       * A NULL commander_fid means "written before migration 11, owner
+       * unknown". Those are claimed by the first commander seen after the
+       * upgrade -- correct for a single-commander install, which is almost
+       * everyone, and better than the alternative for a shared one, which was
+       * showing every commander's missions to all of them.
+       */
+      const rows = await this.db.select<MissionRow[]>(
+        'SELECT * FROM missions WHERE commander_fid IS NULL OR commander_fid = $1',
+        [this.discoveryFid],
+      );
       this.missions.load(rows.map(fromRow));
       logger.info('missions', 'Loaded from storage', { count: rows.length });
     } catch (err) {
@@ -1487,15 +1537,18 @@ export class Companion {
     const all = this.missions.all();
     if (all.length === 0) return;
 
-    const columns = MISSION_COLUMNS.join(', ');
-    const placeholders = MISSION_COLUMNS.map((_, i) => `$${i + 1}`).join(', ');
+    // The owner is written with the row. Without it a new mission would be
+    // stored unattributed, and unattributed rows are visible to every commander
+    // -- which is the leak migration 11 exists to close.
+    const columns = [...MISSION_COLUMNS, 'commander_fid'];
+    const placeholders = columns.map((_, i) => `$${i + 1}`).join(', ');
 
     try {
       for (const mission of all) {
         const row = toRow(mission) as unknown as Record<string, unknown>;
         await this.db.execute(
-          `INSERT OR REPLACE INTO missions (${columns}) VALUES (${placeholders})`,
-          MISSION_COLUMNS.map((c) => row[c] ?? null),
+          `INSERT OR REPLACE INTO missions (${columns.join(', ')}) VALUES (${placeholders})`,
+          [...MISSION_COLUMNS.map((c) => row[c] ?? null), this.discoveryFid],
         );
       }
     } catch (err) {
@@ -2095,8 +2148,8 @@ export class Companion {
         await this.db.execute(
           `INSERT INTO construction_sites
              (market_id, progress, complete, failed, resources, name, priority,
-              updated_at, first_seen_at)
-           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+              updated_at, first_seen_at, commander_fid)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
            ON CONFLICT(market_id) DO UPDATE SET
              progress = excluded.progress,
              complete = excluded.complete,
@@ -2108,6 +2161,8 @@ export class Companion {
           [
             site.marketId, site.progress, site.complete ? 1 : 0, site.failed ? 1 : 0,
             JSON.stringify(site.resources), site.name, site.priority, site.updatedAt, now,
+            // Same reason as missions: an unattributed row is a visible-to-all row.
+            this.discoveryFid,
           ],
         );
       }
@@ -2120,7 +2175,10 @@ export class Companion {
     if (!this.db) return;
     try {
       const rows = await this.db.select<Array<Record<string, unknown>>>(
-        'SELECT * FROM construction_sites ORDER BY priority, updated_at DESC',
+        `SELECT * FROM construction_sites
+          WHERE commander_fid IS NULL OR commander_fid = $1
+          ORDER BY priority, updated_at DESC`,
+        [this.discoveryFid],
       );
       for (const r of rows) {
         this.sites.set(String(r.market_id), {

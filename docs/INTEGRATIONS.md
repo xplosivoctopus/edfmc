@@ -150,3 +150,41 @@ which is why it is the one implemented first.
 The privacy manifests in `packages/integrations/src/registry.ts` are rendered
 directly by the Integrations screen and are **checked by tests against the
 sanitiser**, so the promise and the code cannot drift apart.
+
+---
+
+## Durable queues
+
+One queue per integration, so a failing service cannot block another. There is no
+shared head-of-line: EDSM being down does not stop EDDN.
+
+| Status | Meaning |
+|---|---|
+| `queued` | Waiting to be sent |
+| `attempting` | In flight |
+| `accepted` | The service took it |
+| `retryable` | Failed, will be tried again after a wait |
+| `rejected` | Will never be sent — and why |
+
+**A retry cannot duplicate.** The id is supplied by the producer and is
+deterministic; for a journal submission it derives from the source event id,
+which is already stable across restart and replay. Enqueueing the same
+observation twice is the same row. The primary key is `(integration, id)`,
+because the same event may legitimately be owed to two services and one
+accepting it says nothing about the other.
+
+**Some failures must stop.** A 4xx from a schema validator or an auth check will
+be rejected identically forever, so it is marked `rejected` immediately rather
+than retried. `429` and `408` are the exceptions — they mean *later*, not
+*never*. Everything else backs off on a fixed schedule (5s, 30s, 2m, 5m, 10m,
+10m) and gives up after six attempts, recording why.
+
+Backoff is **stored on the row**, not held in a timer, so a wait survives a
+restart instead of collapsing into a retry storm.
+
+**An item whose owner cannot be established is never sent.** Guessing which
+account should receive somebody's data is worse than not sending it.
+
+**A stored error never carries a credential.** Query strings and named credential
+parameters are stripped, and the text is bounded, before anything reaches the
+database or the audit screen.

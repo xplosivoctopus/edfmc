@@ -445,6 +445,86 @@ fn migrations() -> Vec<Migration> {
             );
         "#,
         kind: MigrationKind::Up,
+    },
+    Migration {
+        version: 11,
+        description: "scope personal state per commander, and durable integration queues",
+        sql: r#"
+            -- Commander isolation.
+            --
+            -- Activity, discovery and research were already scoped. Missions,
+            -- colonisation sites and the submission queues were not, so a second
+            -- commander on the same machine inherited the first one's outstanding
+            -- missions and construction requirements. That is personal state.
+            --
+            -- Deliberately NOT scoped, recorded so it is not "fixed" later by
+            -- mistake: known_carriers and known_traders are facts about places,
+            -- not about a person. Scoping them would mean the same human, on the
+            -- same machine, losing a carrier name they had already learned.
+            --
+            -- Existing rows get NULL, meaning "written before this migration,
+            -- owner unknown", and are claimed by the first commander seen after
+            -- upgrading. For a single-commander install -- almost everyone -- that
+            -- is exactly right. For a shared one it is a guess, but the
+            -- alternatives are showing everyone's data to everyone, which is the
+            -- leak being fixed, or discarding history that belongs to somebody.
+            ALTER TABLE missions ADD COLUMN commander_fid TEXT;
+            ALTER TABLE construction_sites ADD COLUMN commander_fid TEXT;
+            ALTER TABLE verification_queue ADD COLUMN commander_fid TEXT;
+            ALTER TABLE observation_queue ADD COLUMN commander_fid TEXT;
+
+            CREATE INDEX IF NOT EXISTS idx_missions_cmdr ON missions (commander_fid);
+            CREATE INDEX IF NOT EXISTS idx_sites_cmdr ON construction_sites (commander_fid);
+            CREATE INDEX IF NOT EXISTS idx_verification_cmdr ON verification_queue (commander_fid);
+            CREATE INDEX IF NOT EXISTS idx_observation_cmdr ON observation_queue (commander_fid);
+
+            -- Durable per-integration queues.
+            --
+            -- One queue per service, so a failing service cannot block another,
+            -- and enough state to survive a restart, an outage, or an API having
+            -- a bad day.
+            --
+            -- `id` is deterministic and supplied by the producer: for a journal
+            -- submission it derives from the source event id, which is already
+            -- stable across restart and replay. A retry is therefore idempotent
+            -- by construction rather than by bookkeeping.
+            CREATE TABLE IF NOT EXISTS integration_queue (
+                id              TEXT NOT NULL,
+                integration     TEXT NOT NULL,
+                -- Data is never sent to an account it does not belong to. If the
+                -- owner cannot be established, the item is not sent at all.
+                commander_fid   TEXT,
+                -- queued | attempting | accepted | retryable | rejected
+                status          TEXT NOT NULL DEFAULT 'queued',
+                payload         TEXT NOT NULL,
+                attempts        INTEGER NOT NULL DEFAULT 0,
+                -- Sanitised. Never a credential, never a raw response body.
+                last_error      TEXT,
+                -- Bounded backoff lives here rather than in a timer, so a wait
+                -- survives a restart instead of collapsing into an immediate
+                -- retry storm.
+                next_attempt_at TEXT,
+                created_at      TEXT NOT NULL,
+                updated_at      TEXT NOT NULL,
+                PRIMARY KEY (integration, id)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_queue_ready
+                ON integration_queue (integration, status, next_attempt_at);
+
+            -- Per-integration, per-commander state, so the audit view can answer
+            -- "when did this last work, and for whom".
+            CREATE TABLE IF NOT EXISTS integration_state (
+                integration     TEXT NOT NULL,
+                commander_fid   TEXT NOT NULL,
+                enabled         INTEGER NOT NULL DEFAULT 0,
+                last_success_at TEXT,
+                last_error      TEXT,
+                updated_at      TEXT NOT NULL,
+                PRIMARY KEY (integration, commander_fid)
+            );
+        "#,
+        kind: MigrationKind::Up,
     }]
 }
 

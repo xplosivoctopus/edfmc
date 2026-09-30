@@ -408,3 +408,37 @@ passing most of it across, which is coupling relabelled rather than removed.
 The React-facing store exposes exactly one thing: a referentially stable
 snapshot. Whatever moves, that contract does not, and a regression in it is a
 white screen rather than a subtle bug.
+
+## Commander scoping
+
+Personal state belongs to the commander who made it, keyed by **Frontier ID**
+rather than display name — a name can change, and two commanders can share one.
+
+| Scoped | Deliberately shared |
+|---|---|
+| `commander_state`, `discovery_state` | `known_carriers` |
+| `research_sessions` | `known_traders` |
+| `activity_entries`, `activity_sessions`, `activity_notes` | `journal_checkpoint` |
+| `missions`, `construction_sites` | `ingest_stats`, `unknown_events` |
+| `verification_queue`, `observation_queue` | |
+| integration switches | |
+
+The right column is not an oversight. A carrier's name and a station's trader
+kind are facts about *places*, not about a person; scoping them would mean the
+same human, on the same machine, losing something they had already learned.
+
+Missions and construction sites **were** in the wrong column until migration 11.
+A second commander on the same machine inherited the first one's outstanding
+missions and construction requirements — their cargo owed, their deadlines. Only
+discovery and activity were swapped on a commander change; everything else
+carried over.
+
+Rows written before that migration have a NULL owner and are claimed by the
+first commander seen afterwards. For a single-commander install that is exactly
+right; for a shared one it is a guess, but the alternatives were showing
+everyone's data to everyone, which is the leak, or discarding history that
+belongs to somebody. New rows always carry their owner.
+
+Integration switches are keyed per commander for a stronger reason than tidiness:
+an integration is a link to **an account**, and one commander's EDSM key must
+never receive another's flight log.
