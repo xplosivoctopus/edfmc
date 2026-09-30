@@ -182,7 +182,47 @@ judged without alt-tabbing into Elite.
 
 ### Live Journal lifecycle
 
-One behaviour, chosen and documented rather than made configurable:
+The widget shows one of two things, and which one depends on whether the commander
+is in the middle of something.
+
+**Live activity, when there is any.** Currently exobiology sampling: the organism,
+its variant colour, the sample count and the body.
+
+```
+◆ EXOBIOLOGY
+
+Stratum Tectonicas
+Emerald
+
+Sample 2 / 3
+Nervi 4 a
+```
+
+When the body has been surface-scanned, the panel also lists what else is on it,
+so a genus the commander has not found yet is visible rather than implied:
+
+```
+◆ EXOBIOLOGY
+
+Fonticulua Campestris
+Amethyst
+
+✓ Sample complete   3 / 3
+ · Bacterium              Unscanned
+Wregoe LS-N b51-0 A 7 g
+```
+
+The genus being sampled is left out of that list — it is already the headline.
+A body with no surface scan shows no list at all, because without a scan there is
+no list, and an empty one is not a claim that nothing else is there.
+
+**Unfinished business keeps the panel up.** Once a specimen is done, the useful
+thing on screen is no longer the completion but the genus still untouched a few
+hundred metres away, so the five-minute collapse is suspended while anything on
+this body is unscanned. When everything is collected, it ages out as before.
+
+**The newest recorded entry, otherwise.** Titled *Field Journal*, with the same
+lifecycle as before:
 
 - **Recent** (under five minutes): system, body, the entry, and how many entries
   were recorded at that body.
@@ -191,6 +231,32 @@ One behaviour, chosen and documented rather than made configurable:
 It does not disappear, because an empty panel that used to have content reads as a
 bug; and it does not keep asserting something from half an hour ago, which is the
 stale-context problem this project has fixed once already.
+
+#### Why live progress takes precedence
+
+Before this, the widget only ever showed the newest *completed* entry — which
+during an exobiology run meant "biological signals detected" or "landed". Current
+Context already says both, so the panel was spending screen space over a game to
+repeat its neighbour.
+
+The sample counter is the thing nothing else on screen can say. So when a run is
+open it wins, and the title follows the content: a panel headed *Field Journal*
+showing a sample counter describes itself wrongly.
+
+The precedence is a function — `liveJournalPanel` in `src/lib/overlay.ts` — rather
+than a condition inside the markup, so the decision the widget's usefulness depends
+on is asserted by tests directly.
+
+#### What it will not claim
+
+When the app is started midway through a run, the stage count cannot be
+established: the reader resumes from a byte offset rather than replaying history,
+so the first event seen may be the second or the third sample. The widget then
+shows `Sampling` with the organism and **no number**, because a wrong `1 / 3` would
+say two samples remain when one does.
+
+`docs/ACTIVITY-JOURNAL.md` has the measurements behind the sequence and the reset
+rules, including the one that rests on a single observation.
 
 ### Carrier jump: when a countdown ends
 

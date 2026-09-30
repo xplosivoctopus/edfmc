@@ -48,6 +48,17 @@ export class ActivityEngine {
   }
 
   /**
+   * BodyID to name, as learned so far.
+   *
+   * Exposed read-only so live activity can resolve a body without building a
+   * second map. `ScanOrganic` reports `Body` as an integer, and there should be
+   * exactly one implementation that knows how to turn that into a name.
+   */
+  get bodyNameMap(): ReadonlyMap<number, string> {
+    return this.bodyNames;
+  }
+
+  /**
    * The commander changed.
    *
    * Everything learned about bodies belongs to the previous session's location,

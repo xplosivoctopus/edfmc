@@ -104,6 +104,9 @@ export function exobiologyEntries(
         detail: 'Biological sample completed',
         data: {
           ...(genus ? { genus } : {}),
+          // The raw token too, additively: it is language-independent, and it is
+          // what the overlay's genus roster matches a surface scan against.
+          ...(str(raw, 'Genus') ? { genusToken: str(raw, 'Genus') } : {}),
           ...(species ? { species } : {}),
           ...(colour ? { colour } : {}),
           scanType,

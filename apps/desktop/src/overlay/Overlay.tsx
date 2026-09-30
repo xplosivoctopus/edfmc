@@ -2,7 +2,14 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 
-import { countdownTo, type OverlayCarrierJump } from '../lib/overlay';
+import {
+  countdownTo,
+  liveJournalPanel,
+  liveJournalTitle,
+  type OverlayCarrierJump,
+  type OverlayLiveActivity,
+  type OverlayLiveExobiology,
+} from '../lib/overlay';
 
 import './overlay.css';
 
@@ -93,6 +100,7 @@ interface OverlayState {
   appearance: OverlayAppearance;
   guidance: 'standard' | 'new-cmdr';
   liveJournal: LiveJournalState | null;
+  liveActivity: OverlayLiveActivity | null;
   missions: OverlayMissions;
   widgets: OverlayWidgets;
 }
@@ -180,6 +188,76 @@ function CarrierJumpWidget({ jumps }: { jumps: OverlayCarrierJump[] }) {
  * change rather than a new payload.
  */
 const LIVE_JOURNAL_FRESH_MS = 5 * 60 * 1000;
+
+/**
+ * Live exobiology progress.
+ *
+ * This is the reason the widget exists. The Current Context panel already says
+ * "biological signals detected" and "landed"; repeating that here earned the
+ * space back for nothing. What it could not say is how far through a specimen the
+ * commander is, which is the one number they want while walking between plants.
+ *
+ * The stage line is **omitted** when the count is not established rather than
+ * guessed. See `LiveExobiology.samplesTaken`: a wrong "1 / 3" would say two
+ * samples remain when one does.
+ */
+function LiveExobiologyWidget({ live }: { live: OverlayLiveExobiology }) {
+  const stage = live.completed
+    ? `${live.samplesRequired} / ${live.samplesRequired}`
+    : live.samplesTaken === null
+      ? null
+      : `${live.samplesTaken} / ${live.samplesRequired}`;
+
+  return (
+    <>
+      <div className="lj-title">{live.species ?? live.genus ?? 'Unknown organism'}</div>
+      {live.colour && <div className="lj-detail">{live.colour}</div>}
+
+      {live.completed ? (
+        <div className="lx-complete">
+          <span className="lx-tick" aria-hidden="true">
+            ✓
+          </span>
+          Sample complete
+          {stage && <span className="lx-stage-small">{stage}</span>}
+        </div>
+      ) : stage ? (
+        <div className="lx-stage">Sample {stage}</div>
+      ) : (
+        /* Honest about the gap: it knows a run is open, not how far in. */
+        <div className="lx-stage lx-stage-unknown">Sampling</div>
+      )}
+
+      {/*
+        What else is on this body. The reason it is here: the panel used to go
+        quiet after a specimen was finished, saying nothing about the genus still
+        untouched a few hundred metres away.
+
+        Only shown when the body has actually been surface-scanned, and the
+        sampled genus is left out of the list because it is already the headline.
+      */}
+      {live.genera.length > 1 && (
+        <ul className="lx-roster">
+          {live.genera
+            .filter((g) => g.status !== 'sampling')
+            .map((g) => (
+              <li key={g.genus} className={`lx-genus lx-${g.status}`}>
+                <span className="lx-genus-mark" aria-hidden="true">
+                  {g.status === 'complete' ? '✓' : '·'}
+                </span>
+                <span className="lx-genus-name">{g.genus}</span>
+                <span className="lx-genus-state">
+                  {g.status === 'complete' ? 'Collected' : 'Unscanned'}
+                </span>
+              </li>
+            ))}
+        </ul>
+      )}
+
+      {live.bodyName && <div className="lj-body">{live.bodyName}</div>}
+    </>
+  );
+}
 
 function LiveJournalWidget({ journal }: { journal: LiveJournalState }) {
   const [now, setNow] = useState(() => Date.now());
@@ -287,7 +365,24 @@ export default function Overlay() {
     setLayout((prev) => ({ ...prev, [id]: point }));
   }, []);
 
+  /*
+   * A minute tick, so the completion lifecycle advances while the game is quiet.
+   * Overlay state is pushed on journal events; during an idle stretch there is no
+   * push and therefore no re-render, which would leave a finished specimen on
+   * screen indefinitely.
+   */
+  const [minuteTick, setMinuteTick] = useState(() => Date.now());
+  useEffect(() => {
+    const id = setInterval(() => setMinuteTick(Date.now()), 60_000);
+    return () => clearInterval(id);
+  }, []);
+
   const widgets = state?.widgets;
+  const panel = liveJournalPanel({
+    liveActivity: state?.liveActivity ?? null,
+    liveJournal: state?.liveJournal ?? null,
+    now: minuteTick,
+  });
 
   return (
     <div
@@ -411,15 +506,28 @@ export default function Overlay() {
       {/* Only rendered when a jump is actually scheduled: an empty countdown widget
           is pure clutter over a game window. */}
       {/* Opt-in, and only when something has actually been recorded. */}
-      {widgets?.liveJournal === true && state?.liveJournal && (
+      {/*
+        Live progress wins over the newest recorded entry. They answer different
+        questions -- "what am I in the middle of" versus "what did I last
+        finish" -- and showing the second while the first exists is what made
+        this widget read as a copy of Current Context.
+
+        The title follows the content for the same reason: a panel headed "Field
+        Journal" showing a sample counter describes itself wrongly.
+      */}
+      {widgets?.liveJournal === true && panel !== null && (
         <Widget
           id="liveJournal"
-          title="Field Journal"
+          title={liveJournalTitle(panel)}
           pos={layout.liveJournal}
           editing={editing}
           onMove={move}
         >
-          <LiveJournalWidget journal={state.liveJournal} />
+          {panel.kind === 'exobiology' ? (
+            <LiveExobiologyWidget live={panel.live} />
+          ) : (
+            <LiveJournalWidget journal={panel.journal} />
+          )}
         </Widget>
       )}
 

@@ -91,6 +91,7 @@ import { httpFetch } from './http.js';
 import { credentialPresent } from './credentials.js';
 import {
   ActivityEngine,
+  LiveActivityTracker,
   groupActivity,
   type ActivityEntry,
   type ActivityGroup,
@@ -122,6 +123,7 @@ import {
   clampNumber,
   clampOpacity,
   type LiveJournalState,
+  type OverlayLiveActivity,
   type OverlayAppearance,
   type OverlayCarrierJump,
   type OverlayMissionRow,
@@ -684,6 +686,13 @@ export class Companion {
   };
 
   private readonly activity = new ActivityEngine({ commanderFid: null });
+  /**
+   * What the commander is doing right now, as opposed to what they have done.
+   *
+   * Transient and never persisted: it is rebuilt from live events, and storing it
+   * would turn "in progress" into a claim that outlived the session it described.
+   */
+  private readonly liveActivity = new LiveActivityTracker({ commanderFid: null });
   private activityEntries: ActivityEntry[] = [];
   private static readonly ACTIVITY_IN_MEMORY = 500;
 
@@ -1309,6 +1318,26 @@ export class Companion {
       this.notify();
     }
 
+    /*
+     * Live progress, which is a different question from the entry above: "what am
+     * I in the middle of" rather than "what did I just finish".
+     *
+     * Ordered after the engine so the body-name map already contains anything
+     * this event taught it -- a `Touchdown` naming the body the commander is
+     * about to sample on arrives before the first `ScanOrganic`.
+     */
+    let liveChanged = this.liveActivity.observe(event, this.activity.bodyNameMap);
+    // A body may be named by a later event than the scan that referenced it.
+    if (this.liveActivity.resolveBodyName(this.activity.bodyNameMap)) liveChanged = true;
+    if (liveChanged) {
+      this.seedRosterFromHistory();
+      this.liveActivity.setSystem(
+        isKnown(this.state.starSystem) ? this.state.starSystem : null,
+        isKnown(this.state.systemAddress) ? this.state.systemAddress : null,
+      );
+      this.notify();
+    }
+
     // Context resolution runs on every event, including the high-frequency ones:
     // a rule may legitimately key on them, and evaluating a dozen declarative
     // conditions is far cheaper than a React render.
@@ -1463,6 +1492,7 @@ export class Companion {
         appearance: this.appearance,
         guidance: this.guidanceMode,
         liveJournal: this.projectLiveJournal(),
+        liveActivity: this.projectLiveActivity(),
         context: top
           ? {
               title: top.title,
@@ -1689,6 +1719,7 @@ export class Companion {
     // commanders on one machine must not inherit each other's history. The
     // engine is told first so nothing is recorded against the outgoing FID.
     this.activity.setCommander(fid);
+    this.liveActivity.setCommander(fid);
     this.activityEntries = [];
     await this.loadActivity(fid);
 
@@ -1975,6 +2006,67 @@ export class Companion {
   }
 
   /* -------------------------------------------------- activity journal */
+
+  /**
+   * Tell live activity which genera this body has already given up.
+   *
+   * The journal reader resumes from a byte offset rather than replaying, so a
+   * specimen collected in an earlier session is invisible to the tracker. Without
+   * this the roster would call it "unscanned" """ + DASH + """ a confident wrong answer, and the
+   * one failure mode that would make the whole panel untrustworthy.
+   *
+   * Read from entries already in memory, so this costs no query.
+   */
+  private seedRosterFromHistory(): void {
+    const live = this.liveActivity.state;
+    if (live === null) return;
+    const { bodyId, systemAddress } = live.exobiology;
+    if (bodyId === null) return;
+
+    const done: string[] = [];
+    for (const entry of this.activityEntries) {
+      if (entry.subtype !== 'sample-completed') continue;
+      if (entry.bodyId !== bodyId) continue;
+      if (entry.systemAddress !== null && entry.systemAddress !== systemAddress) continue;
+      // Either key: older entries stored only the localised name.
+      const token = entry.data['genusToken'];
+      const genus = entry.data['genus'];
+      if (typeof token === 'string') done.push(token);
+      else if (typeof genus === 'string') done.push(genus);
+    }
+
+    if (done.length > 0) this.liveActivity.seedCompleted(systemAddress, bodyId, done);
+  }
+
+  /**
+   * Live activity for the overlay.
+   *
+   * Projected to exactly what the widget draws, so the overlay window holds no
+   * logic that could disagree with this one. Null when nothing is in progress,
+   * which is what lets the widget fall back to the newest recorded entry.
+   */
+  private projectLiveActivity(): OverlayLiveActivity | null {
+    const live = this.liveActivity.state;
+    if (live === null) return null;
+    const e = live.exobiology;
+    return {
+      kind: 'exobiology',
+      genus: e.genus,
+      species: e.species,
+      colour: e.colour,
+      bodyName: e.bodyName,
+      samplesTaken: e.samplesTaken,
+      samplesRequired: e.samplesRequired,
+      completed: e.completed,
+      genera: e.genera.map((g) => ({
+        genus: g.genus,
+        status: g.status,
+        samplesTaken: g.samplesTaken,
+      })),
+      unscannedCount: e.unscannedCount,
+      updatedAt: e.updatedAt,
+    };
+  }
 
   /**
    * Write new activity through to SQLite.

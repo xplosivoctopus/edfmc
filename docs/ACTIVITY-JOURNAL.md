@@ -12,6 +12,27 @@ normal operation.
 
 ---
 
+## Two different things, deliberately kept apart
+
+| | Activity Journal | Live activity state |
+|---|---|---|
+| **What it is** | A historical record | Current operational progress |
+| **Lifetime** | Durable, stored in SQLite | Transient, in memory only |
+| **Granularity** | One entry per thing accomplished | Every step, while it is happening |
+| **Answers** | "What did I do?" | "What am I in the middle of?" |
+| **Lives in** | `packages/activity/src/exobiology.ts` | `packages/activity/src/live.ts` |
+
+The distinction is the whole design. Writing progress into history would turn the
+Journal into a stage-by-stage event list, which is what it exists not to be; and
+having only history meant the overlay could show nothing but the last completed
+thing, which largely restated Current Context.
+
+**Live state is never persisted and never becomes an entry.** It is rebuilt from
+live events, because storing "in progress" would keep asserting it after the
+session it described had ended.
+
+---
+
 ## What it records today
 
 | Subtype | Entries in the corpus | From |
@@ -21,13 +42,136 @@ normal operation.
 | `sample-completed` | 68 | `ScanOrganic` with `ScanType: Analyse` |
 | `data-sold` | 5 | `SellOrganicData` |
 
-`Log` and `Sample` scans produce nothing. They are progress toward one specimen —
-183 of 243 measured scans — and an entry each would bury the completion in its own
-noise. The stages are still visible in the completed entry's data.
+The counts above are from the 299-file snapshot named at the top of this document.
+The sequence measurements below were taken later, against 303 files and 323
+`ScanOrganic` events, so the two do not line up exactly; each states its own
+corpus rather than being quietly reconciled.
+
+`Log` and `Sample` scans produce nothing. They are progress toward one specimen,
+and an entry each would bury the completion in its own noise. Live progress is
+shown in the overlay instead — see **The measured sample sequence** below.
+
+Measured on the later snapshot: this suppresses **243 of 323 `ScanOrganic`
+events**, leaving 80 completions.
 
 ---
 
 ## Findings that changed the design
+
+### The measured sample sequence is four events, not three
+
+The obvious reading of the event names is wrong, and building on it would have
+reported every specimen finished one sample early.
+
+Measured across the corpus (303 files, 289,725 events, 323 `ScanOrganic`):
+
+```
+Log  ->  Sample  ->  Sample  ->  Analyse      80 of 83 runs
+Log                                            3 of 83 runs (abandoned)
+```
+
+`Sample` occurs **twice**, so a stage number cannot be derived from `ScanType`
+alone: the same value means "2 of 3" the first time and "3 of 3" the second.
+Counting is the only correct way to do it.
+
+`Analyse` is **not** the third sample. It is the completion event that follows it,
+and it was directly preceded by a `Sample` of the same species in 80 of 80 cases.
+Every one of the 24 completed species took exactly three samples.
+
+`WasLogged` is present on all 323 scans and was `false` on every one. A field with
+no observed variation carries no information, so nothing reads it.
+
+### Almost nothing resets a sample run
+
+This is the finding that most contradicts intuition. Measuring what appears
+*between* the stages of a single organism shows that ordinary sampling is full of
+events that look like interruptions:
+
+| Between stages of one organism | Runs |
+|---|---|
+| `Touchdown`, `Liftoff` | 74, 68 |
+| `Embark`, `Disembark` | most |
+| `SuitLoadout`, `Music`, `BackpackChange`, `DockSRV` | most |
+| `Fileheader`, `LoadGame`, `Location`, `Shutdown` | 4 |
+
+Commanders fly between plants: land, get out, sample, board, take off, land again.
+That *is* the activity. Resetting on boarding the ship, changing suit or landing
+would break the feature for nearly every real run. Even a **game restart** appears
+mid-run four times, so quitting to the menu does not abandon a sample.
+
+`FSDJump` never once appears between the stages of a run (0 of 83), which is what
+makes leaving the system a signal rather than a guess.
+
+Time is not a signal either: the longest gap between two stages of one organism was
+**50,313 seconds** — about fourteen hours — so nothing expires on a timer.
+
+**So the reset rules are:**
+
+| Signal | Effect | Evidence |
+|---|---|---|
+| `ScanOrganic` for a different system/body/species | Replaces the run | The 3 abandoned runs were each followed by a different species' `Log` |
+| `Analyse` | Completes it | 80 of 80 |
+| `FSDJump` / `CarrierJump` / `Location` to a different system | Abandons it | `FSDJump` never occurs mid-run |
+| `SellOrganicData` | Retires a *completed* specimen | The data has left the ship |
+| Commander change | Clears it | Architectural: progress belongs to whoever took it |
+| `Died` | Abandons an *unfinished* run | **One observation. See below.** |
+
+### The genus roster: what is still down there
+
+A detailed surface scan reports which genera a body carries, so the overlay can
+say what has **not** been collected rather than only what has. That this works is
+a measurement:
+
+| | Result |
+|---|---|
+| `SAASignalsFound.Genuses[].Genus` vs `ScanOrganic.Genus` | Same tokens; 11 of 11 sampled genera were listed |
+| Genera sampled that the body's scan never listed | **0** |
+| `SAASignalsFound.BodyID` vs `ScanOrganic.Body` | Matched on all 54 sampled bodies |
+| Biological signal count vs genera listed | Equal, 119 of 119 |
+| Bodies scanned more than once | 17 of 60 — a repeat scan merges |
+
+Of 60 bodies with a genus list: **47 finished, 6 partially worked, 7 untouched.**
+"Unscanned" is an ordinary state, not an edge case.
+
+Matching is on the **raw token**, not the localised name. The two agreed on every
+genus measured, but the token is language-independent and the localised string is
+a display concern.
+
+The scan gives a genus and **not** a species, so an unsampled row says `Bacterium`
+and does not guess which bacterium.
+
+**A body with no surface scan has an empty roster**, and that is not a claim that
+nothing is there. It is the difference between "the scan listed these" and "we
+have not looked".
+
+### What the journal does not establish
+
+**Death.** There are 18 `Died` events in the corpus and exactly one falls near a
+sample run — a `Log` five minutes earlier, with no further scan of that organism
+afterwards. That is *consistent* with death abandoning the run, and it is one data
+point, so it is not proof.
+
+Clearing is the conservative direction: the failure mode is a widget that stops
+showing progress the commander could have resumed, which they will notice and can
+re-establish with their next sample. The opposite error asserts progress that no
+longer exists.
+
+**Which genera an earlier session already collected.** The tracker only sees this
+session's events, so a specimen collected last week would be reported "unscanned"
+— a confident wrong answer, and the one failure that would make the whole panel
+untrustworthy. Completions are therefore seeded from the durable Journal before
+the roster is built. Older entries stored only the localised genus name, so the
+seed matches on either that or the raw token.
+
+**The stage count after an app restart.** The journal reader resumes from a byte
+offset rather than replaying history, so starting the app midway through a run
+means the first event it sees is a `Sample` that could be the second or the third.
+Both are consistent with what was observed.
+
+So **no number is claimed**: `samplesTaken` is `null` and the overlay omits the
+stage line, showing "Sampling" and the organism instead. A wrong "1 / 3" would tell
+the commander two samples remain when one does. `Analyse` recovers a definite count,
+because it is itself proof of three.
 
 These are the reason the feature looks the way it does. Each was measured before
 anything was written.
@@ -141,12 +285,20 @@ Never titles — those carry system names, body names and organism discoveries.
 
 ## The Live Journal overlay widget
 
-The Journal screen is the history. The overlay widget is not a smaller copy of it
--- it answers a different question: *what did I just record?*
+The Journal screen is the history. The overlay widget answers a different
+question, and which one depends on what is happening:
 
-One entry, plus how many were recorded at the same body. Off by default, and it
-collapses to a count after five minutes. `docs/OVERLAY.md` has the lifecycle and
-why that shape was chosen.
+- **While sampling** — live progress: organism, variant colour, `1 / 3`, the body,
+  and what else the body's surface scan listed. Titled **Exobiology**.
+- **Otherwise** — the newest recorded entry plus how many were recorded at the same
+  body. Titled **Field Journal**, and it collapses to a count after five minutes.
+
+Live progress always wins. That precedence is a function, `liveJournalPanel`, and
+not a condition buried in markup, because it is the decision the widget's
+usefulness depends on: showing "2 biological signals detected" while a sample run
+is open repeats Current Context and wastes the space.
+
+`docs/OVERLAY.md` has the lifecycle and why that shape was chosen.
 
 ## Deferred, explicitly
 
@@ -159,6 +311,10 @@ why that shape was chosen.
   copying will work when there is evidence to build on.
 - **Mining and colonisation categories.** The model covers them; no processors
   yet. Exobiology was completed properly instead of three categories half-done.
+- **Live states for other activities.** `LiveActivity` is a tagged union on `kind`
+  with one member, and the overlay falls back to the recorded entry for a `kind` it
+  does not recognise — so mining or delivery progress can be added without
+  touching the widget's structure or breaking an older overlay.
 - **Plugin-contributed processors.** The processor signature is already a pure
   function, which is the shape a plugin API would take, but the contract is not
   stable enough to publish.
