@@ -123,4 +123,63 @@ describe('resolveJournalDirectory', () => {
     expect(r.strategy).toBe('none');
     expect(r.directory).toBeNull();
   });
+
+  /*
+   * A throwing probe is not hypothetical: on the desktop the probe is an IPC
+   * call into the native layer, and it rejects whenever that layer is not
+   * answering. It used to escape all the way out of startup, leaving the app
+   * on "Starting" forever with no visible cause.
+   */
+  describe('when the existence probe itself fails', () => {
+    const throws = async (): Promise<boolean> => {
+      throw new Error('no tauri runtime');
+    };
+
+    it('resolves rather than rejecting', async () => {
+      const r = await resolveJournalDirectory({ savedGamesPath: '/saved', exists: throws });
+      expect(r.directory).toBeNull();
+      expect(r.strategy).toBe('probe-failed');
+    });
+
+    it('does not claim a configured path is missing when it could not be checked', async () => {
+      // The distinction that matters: "does not exist" sends someone to fix a
+      // path that may be perfectly correct.
+      const r = await resolveJournalDirectory({ manualOverride: '/cmdr/path', exists: throws });
+      expect(r.strategy).toBe('probe-failed');
+      expect(r.detail).not.toContain('does not exist');
+      expect(r.detail).toContain('/cmdr/path');
+      expect(r.detail).toContain('no tauri runtime');
+    });
+
+    it('distinguishes a failed check from an absent directory', async () => {
+      const failed = await resolveJournalDirectory({ savedGamesPath: '/saved', exists: throws });
+      const absent = await resolveJournalDirectory({ savedGamesPath: '/saved', exists: exists([]) });
+      expect(failed.strategy).not.toBe(absent.strategy);
+      expect(failed.detail).not.toBe(absent.detail);
+    });
+
+    it('still tries the user-profile fallback after the known folder fails', async () => {
+      // Two different paths. One probe failing says nothing about the other,
+      // and giving up early would strand anyone whose Saved Games folder is
+      // redirected.
+      const home = process.env['USERPROFILE'] ?? process.env['HOME'];
+      expect(home, 'this test needs a home directory in the environment').toBeTruthy();
+      const expected = join(home!, 'Saved Games', 'Frontier Developments', 'Elite Dangerous');
+
+      let first = true;
+      const r = await resolveJournalDirectory({
+        savedGamesPath: '/saved',
+        exists: async (p: string) => {
+          if (first) {
+            first = false;
+            throw new Error('no tauri runtime');
+          }
+          return p === expected;
+        },
+      });
+
+      expect(r.strategy).toBe('env-fallback');
+      expect(r.directory).toBe(expected);
+    });
+  });
 });

@@ -525,6 +525,85 @@ fn migrations() -> Vec<Migration> {
             );
         "#,
         kind: MigrationKind::Up,
+    },
+    Migration {
+        version: 12,
+        description: "attribute legacy rows by evidence, not by who launches first",
+        sql: r#"
+            -- Every commander this installation has ever seen.
+            --
+            -- Worth existing beyond this migration: the audit view needs to name
+            -- the commander an integration belongs to, and "which commanders does
+            -- this machine know about" had no single answer before.
+            CREATE TABLE IF NOT EXISTS commander_registry (
+                fid           TEXT PRIMARY KEY,
+                commander     TEXT,
+                first_seen_at TEXT NOT NULL,
+                last_seen_at  TEXT NOT NULL
+            );
+
+            -- Populated from every table that already recorded an owner. These
+            -- are the only evidence the installation holds about who has played
+            -- here, and it is evidence rather than inference: each row was
+            -- written while that commander was active.
+            INSERT OR IGNORE INTO commander_registry (fid, commander, first_seen_at, last_seen_at)
+              SELECT fid, commander, COALESCE(updated_at, '1970-01-01T00:00:00Z'),
+                     COALESCE(updated_at, '1970-01-01T00:00:00Z')
+                FROM commander_state
+               WHERE fid IS NOT NULL AND fid <> '';
+
+            INSERT OR IGNORE INTO commander_registry (fid, commander, first_seen_at, last_seen_at)
+              SELECT DISTINCT commander_fid, NULL, '1970-01-01T00:00:00Z', '1970-01-01T00:00:00Z'
+                FROM discovery_state
+               WHERE commander_fid IS NOT NULL AND commander_fid <> '';
+
+            INSERT OR IGNORE INTO commander_registry (fid, commander, first_seen_at, last_seen_at)
+              SELECT DISTINCT commander_fid, NULL, '1970-01-01T00:00:00Z', '1970-01-01T00:00:00Z'
+                FROM research_sessions
+               WHERE commander_fid IS NOT NULL AND commander_fid <> '';
+
+            INSERT OR IGNORE INTO commander_registry (fid, commander, first_seen_at, last_seen_at)
+              SELECT DISTINCT commander_fid, NULL, '1970-01-01T00:00:00Z', '1970-01-01T00:00:00Z'
+                FROM activity_entries
+               WHERE commander_fid IS NOT NULL AND commander_fid <> '';
+
+            -- Legacy attribution.
+            --
+            -- Migration 11 left pre-existing rows unowned and said the first
+            -- commander to launch would claim them. That closes the leak but can
+            -- misattribute a shared installation's history, so it is replaced by
+            -- a rule with evidence behind it:
+            --
+            --   exactly one commander known  -> the rows are theirs; assign them
+            --   none, or more than one       -> ownership is not established;
+            --                                   leave them unassigned
+            --
+            -- Unassigned rows are NOT deleted. They stay with commander_fid NULL,
+            -- which the scoped queries now exclude outright, so they are invisible
+            -- to every commander rather than visible to all of them -- and they
+            -- remain on disk for a future recovery or rebuild to attribute
+            -- properly.
+            UPDATE missions
+               SET commander_fid = (SELECT fid FROM commander_registry)
+             WHERE commander_fid IS NULL
+               AND (SELECT COUNT(*) FROM commander_registry) = 1;
+
+            UPDATE construction_sites
+               SET commander_fid = (SELECT fid FROM commander_registry)
+             WHERE commander_fid IS NULL
+               AND (SELECT COUNT(*) FROM commander_registry) = 1;
+
+            UPDATE verification_queue
+               SET commander_fid = (SELECT fid FROM commander_registry)
+             WHERE commander_fid IS NULL
+               AND (SELECT COUNT(*) FROM commander_registry) = 1;
+
+            UPDATE observation_queue
+               SET commander_fid = (SELECT fid FROM commander_registry)
+             WHERE commander_fid IS NULL
+               AND (SELECT COUNT(*) FROM commander_registry) = 1;
+        "#,
+        kind: MigrationKind::Up,
     }]
 }
 

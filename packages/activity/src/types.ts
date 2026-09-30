@@ -135,6 +135,20 @@ export interface ActivityContext {
   readonly systemAddress: number | null;
 }
 
+/**
+ * Which interpretation produced an entry.
+ *
+ * Carried so a future migration, sync or rebuild can tell entries written by one
+ * version of a processor from another. The meaning of "biological sample
+ * completed" is not guaranteed to be identical forever, and silently rewriting
+ * history when it changes would be the opposite of a journal.
+ *
+ * Not shown in normal UI. Raised when a processor's output changes meaning, not
+ * when its code changes.
+ */
+export const ACTIVITY_SCHEMA_VERSION = 1;
+export const EXOBIOLOGY_SCHEMA_VERSION = 1;
+
 export const ACTIVITY_LIMITS = {
   /** Titles are read at a glance, not scrolled. */
   maxTitleChars: 120,

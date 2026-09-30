@@ -618,6 +618,118 @@ input[type='text']:focus { border-color: var(--accent); }
 .status-needs-configuration { color: #ffc46b; border-color: #7a5a1f; }
 .status-not-implemented { color: var(--muted); border-style: dashed; }
 
+/*
+ * Journal shape anomalies.
+ *
+ * A real table, not a list of sentences: the columns are the comparison, and
+ * scanning down "Was" against "Now" is the whole point. Header cells carry
+ * `scope`, so the relationship survives a screen reader too.
+ */
+.anomaly-table {
+  width: 100%;
+  border-collapse: collapse;
+  margin-top: 0.75rem;
+  font-size: 0.8125rem;
+}
+.anomaly-table th {
+  text-align: left;
+  font-size: 0.6875rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+  font-weight: 600;
+  padding: 0 0.625rem 0.375rem 0;
+  border-bottom: 1px solid var(--line);
+}
+.anomaly-table td {
+  padding: 0.375rem 0.625rem 0.375rem 0;
+  border-bottom: 1px solid var(--line);
+  color: var(--text);
+  vertical-align: top;
+}
+.anomaly-table tr:last-child td { border-bottom: none; }
+/* Event and field names are identifiers; reading them as prose invites typos in
+   a bug report. */
+.anomaly-table td:first-child,
+.anomaly-table td:nth-child(2) {
+  font-family: Consolas, "Cascadia Mono", monospace;
+  font-size: 0.75rem;
+}
+.anomaly-table .num { text-align: right; font-variant-numeric: tabular-nums; }
+
+/*
+ * The sharing audit.
+ *
+ * The headline answers "has anything left this machine?" before any figure has
+ * to be read, so it is set apart from the surrounding prose without being
+ * alarming -- it is usually reassuring, and styling it as a warning would train
+ * people to skip it.
+ */
+.audit-headline {
+  margin: 0.75rem 0 0.5rem;
+  font-size: 0.9375rem;
+  color: var(--text);
+  font-weight: 600;
+}
+
+.audit-line {
+  margin: 0.5rem 0 0.75rem;
+  font-size: 0.8125rem;
+  color: var(--muted);
+}
+
+/*
+ * Counts as a definition list: each figure is an answer to a named question, and
+ * the label must stay attached to the number for a screen reader as well as
+ * visually.
+ */
+.queue-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(7rem, 1fr));
+  gap: 0.5rem 1rem;
+  margin: 0.25rem 0 0.75rem;
+}
+.queue-grid > div {
+  background: var(--surface-3);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: 0.4375rem 0.625rem;
+}
+.queue-grid dt {
+  font-size: 0.6875rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+  font-weight: 600;
+}
+.queue-grid dd {
+  margin: 0.125rem 0 0;
+  font-size: 1rem;
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
+}
+/* Timestamps are prose-length, so they get a full row rather than a cell. */
+.queue-wide { grid-column: 1 / -1; }
+.queue-wide dd { font-size: 0.8125rem; }
+
+.audit-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin: 0 0 0.75rem;
+}
+
+/* A sanitised failure reason, shown only on request: useful in a bug report,
+   noise the rest of the time. */
+.error-detail {
+  display: block;
+  margin-top: 0.375rem;
+  font-family: Consolas, "Cascadia Mono", monospace;
+  font-size: 0.75rem;
+  color: #ff8f7a;
+  overflow-wrap: anywhere;
+}
+
 /* Shares and Never shares side by side: the second answers the question the
    first provokes, so they belong in view together. */
 .privacy-grid {

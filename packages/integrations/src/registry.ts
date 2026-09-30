@@ -14,12 +14,44 @@
 import { EDDN_JOURNAL_EVENTS } from './eddn.js';
 import type { IntegrationDescriptor, IntegrationId } from './types.js';
 
+/**
+ * The guarantees that hold for every integration, defined once.
+ *
+ * Previously each manifest spelled these out in its own words, so
+ * `universalNeverShares` intersected them to nothing -- meaning the documented
+ * claim "never shared by any of them" was an assertion no code backed. Sharing
+ * the strings makes the universal promise *derived* from the manifests rather
+ * than restated alongside them, which is the only version of it that cannot
+ * drift out of agreement with the code.
+ *
+ * Anything genuinely specific to one service stays in that service's own list.
+ */
+export const UNIVERSAL_NEVER_SHARES: readonly string[] = [
+  'Chat, friends, wings or squadrons',
+  'Your Activity Journal, notes or saved items',
+  'Your credits, ship loadout, fines or bounties',
+  'Your reputation with any faction',
+  'Where you are standing on a planet',
+  'Anything at all while this integration is switched off',
+];
+
 export const INTEGRATIONS: Readonly<Record<IntegrationId, IntegrationDescriptor>> = {
   eddn: {
     id: 'eddn',
     name: 'EDDN',
     homepage: 'https://github.com/EDCD/EDDN',
-    implemented: true,
+    /*
+     * The adapter, sanitiser and queue are built and tested; the submission loop
+     * that feeds them from live journal events is not yet connected.
+     *
+     * Marked honestly rather than left as `true`, because an enable switch that
+     * implies data is being shared when none is would be exactly the fake
+     * "Connected" state this screen exists to prevent -- and it is the kind of
+     * claim that erodes trust in every other statement on the page.
+     */
+    implemented: false,
+    pendingReason:
+      'Message building, sanitisation and queuing are complete and tested. The step that feeds live journal events into the queue is not connected yet, so nothing is being sent.',
     privacy: {
       summary:
         'The community data relay. Everything sent is public and permanent, and is what keeps station and market tools current.',
@@ -31,12 +63,8 @@ export const INTEGRATIONS: Readonly<Record<IntegrationId, IntegrationDescriptor>
         'Which game build produced the data',
       ],
       neverShares: [
-        'Chat, friends, wings or squadrons',
-        'Your credits, ship loadout, fines or bounties',
-        'Where you are standing on a planet (latitude and longitude are stripped)',
-        'Your reputation with any faction',
-        'Your Activity Journal, notes or saved items',
-        'Anything at all while this integration is switched off',
+        ...UNIVERSAL_NEVER_SHARES,
+        'Your latitude and longitude, which are stripped before anything is sent',
       ],
     },
   },
@@ -58,8 +86,7 @@ export const INTEGRATIONS: Readonly<Record<IntegrationId, IntegrationDescriptor>
         'Your EDSM commander name, which the API requires to attribute the log',
       ],
       neverShares: [
-        'Chat, friends, wings or squadrons',
-        'Your Activity Journal, notes or saved items',
+        ...UNIVERSAL_NEVER_SHARES,
         'Your API key with anyone but EDSM — it never reaches EDFM',
       ],
     },
@@ -82,8 +109,7 @@ export const INTEGRATIONS: Readonly<Record<IntegrationId, IntegrationDescriptor>
         'Your Inara commander name',
       ],
       neverShares: [
-        'Chat, friends, wings or squadrons',
-        'Your Activity Journal, notes or saved items',
+        ...UNIVERSAL_NEVER_SHARES,
         'Your API key with anyone but Inara — it never reaches EDFM',
       ],
     },
@@ -101,6 +127,7 @@ export const INTEGRATIONS: Readonly<Record<IntegrationId, IntegrationDescriptor>
       requiresCredential: false,
       shares: [],
       neverShares: [
+        ...UNIVERSAL_NEVER_SHARES,
         'Anything, until it is confirmed which submissions are supported directly',
       ],
     },

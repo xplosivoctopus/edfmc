@@ -25,6 +25,14 @@ known folder (`FOLDERID_SavedGames`), then `Frontier Developments/Elite Dangerou
 The Rust layer resolves this via the shell known-folder API. A manual override is
 always available in Settings, and the resolver reports which strategy succeeded.
 
+The resolver never rejects, and it keeps *"we looked and it is not there"*
+(`none`) apart from *"we could not look"* (`probe-failed`) — the existence check
+is an IPC call into the native layer, which can fail for reasons that have
+nothing to do with the path being asked about. Only the first case means **set a
+path in Settings**; reporting the second as a missing folder would send someone
+to fix a path that was never the problem. A failed probe surfaces as an error
+rather than as "No journal folder".
+
 ## File format
 
 - One JSON object per line, **CRLF**-terminated (verified on the 5 most recent files).

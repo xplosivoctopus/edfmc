@@ -179,6 +179,35 @@ describe('application startup', () => {
     expect(sections()).toEqual(standard);
   });
 
+  /*
+   * The native layer rejects every command in this file, which is exactly what
+   * a broken IPC boundary looks like on a real machine. That rejection used to
+   * escape `start()` through the journal-directory probe: the run reported an
+   * unhandled rejection, and the app was left on `connection: 'starting'` --
+   * a window showing "Starting" forever, with no error anywhere to act on.
+   */
+  it('settles into a reportable state when the native layer is unavailable', async () => {
+    await mountApp();
+    const { companion } = await import('../src/lib/companion');
+    const snap = companion.snapshot();
+
+    expect(snap.connection, 'startup must not stall on "starting"').not.toBe('starting');
+    // Whatever went wrong, the screen has to be able to say something about it.
+    expect(`${snap.directoryDetail}${snap.lastError ?? ''}`.trim().length).toBeGreaterThan(0);
+  });
+
+  it('does not tell the commander a path is missing when it could not be checked', async () => {
+    // "Set it in Settings" is the wrong instruction when the check never ran,
+    // and the `no-directory` badge ("No journal folder") asserts something this
+    // run did not establish.
+    await mountApp();
+    const { companion } = await import('../src/lib/companion');
+    const snap = companion.snapshot();
+    expect(snap.directoryDetail).not.toContain('Could not locate');
+    expect(snap.connection).toBe('error');
+    expect(container.textContent).not.toContain('No journal folder');
+  });
+
   it('makes no network request during a cold start', async () => {
     // Verification is opt-in. A fresh install that has never consented must not
     // contact the API to find that out.

@@ -14,6 +14,7 @@ import { openUrl } from '@tauri-apps/plugin-opener';
 import { Logistics } from './Logistics';
 import { FirstRunGuidance, GuidanceChoice } from './Guidance';
 import { Integrations } from './Integrations';
+import { aboutStatus, newerBuildNotice } from './lib/about';
 import { Journal } from './Journal';
 import { Research } from './Research';
 import { Contributions } from './Contributions';
@@ -56,7 +57,7 @@ const SECTIONS = [
   'Journal',
   'Research',
   'Contributions',
-  'Integrations',
+  'Connections',
   'Plugins',
   'Settings',
   'Diagnostics',
@@ -72,7 +73,7 @@ const IMPLEMENTED: ReadonlySet<Section> = new Set<Section>([
   'Journal',
   'Research',
   'Contributions',
-  'Integrations',
+  'Connections',
   'Plugins',
   'Settings',
   'Diagnostics',
@@ -140,7 +141,7 @@ export default function App() {
         {section === 'Journal' && <Journal snap={snap} />}
         {section === 'Research' && <Research snap={snap} />}
         {section === 'Contributions' && <Contributions snap={snap} />}
-        {section === 'Integrations' && <Integrations snap={snap} />}
+        {section === 'Connections' && <Integrations snap={snap} />}
         {section === 'Plugins' && <PluginsScreen snap={snap} />}
         {section === 'Settings' && <Settings snap={snap} />}
         {section === 'Diagnostics' && <Diagnostics snap={snap} />}
@@ -1120,11 +1121,91 @@ function Diagnostics({ snap }: { snap: Snap }) {
     [snap.stats.unknownEventKinds],
   );
 
+  const status = useMemo(
+    () =>
+      aboutStatus({
+        appVersion: snap.diagnostics.appVersion,
+        connectedBuild: snap.diagnostics.gameVersion,
+      }),
+    [snap.diagnostics.appVersion, snap.diagnostics.gameVersion],
+  );
+  const notice = newerBuildNotice(status);
+
   return (
     <>
       <header className="page-head">
         <h1>Diagnostics</h1>
       </header>
+
+      <section className="card">
+        <h2>Version &amp; status</h2>
+        <div className="grid">
+          <Field label="Companion" value={status.appVersion} />
+          <Field label="Context rules" value={`v${status.contentVersion} (${status.contentSource})`} />
+          <Field label="Rules loaded" value={String(status.contextRules)} />
+          <Field label="Plugin API" value={`v${status.pluginApi}`} />
+          <Field label="Activity schema" value={`v${status.exobiologySchema}`} />
+          <Field label="Journal validated through" value={status.validatedBuild} />
+          <Field label="Game build" value={status.connectedBuild ?? 'Not reported yet'} />
+        </div>
+        {/*
+          Informational, and worded to say so. "We have not measured this build
+          yet" is not "this is broken", and implying otherwise would teach people
+          to ignore the notice.
+        */}
+        {notice && <p className="note">{notice}</p>}
+      </section>
+
+      <section className="card">
+        <h2>Journal shape</h2>
+        <p className="muted">
+          Fields whose type changed from the first shape seen this session. Event and field names,
+          the two types, a count and the game build — never a field&apos;s contents, so this panel is
+          safe to screenshot into a bug report.
+        </p>
+        <div className="grid">
+          <Field label="Event types seen" value={String(snap.diagnostics.eventsTracked)} />
+          <Field label="Fields tracked" value={String(snap.diagnostics.fieldsTracked)} />
+          <Field label="Changed shape" value={String(snap.diagnostics.anomalies.length)} />
+        </div>
+        {snap.diagnostics.anomalies.length === 0 ? (
+          <p className="muted">
+            Nothing has changed shape. This is the expected state — across the reference corpus of
+            289,725 events the journal was entirely type-stable.
+          </p>
+        ) : (
+          <table className="anomaly-table">
+            <thead>
+              <tr>
+                <th scope="col">Event</th>
+                <th scope="col">Field</th>
+                <th scope="col">Was</th>
+                <th scope="col">Now</th>
+                <th scope="col">Count</th>
+                <th scope="col">Build</th>
+              </tr>
+            </thead>
+            <tbody>
+              {snap.diagnostics.anomalies.slice(0, 40).map((a) => (
+                <tr key={`${a.event}.${a.field}`}>
+                  <td>{a.event}</td>
+                  <td>{a.field}</td>
+                  <td>{a.expected}</td>
+                  <td>{a.observed}</td>
+                  <td className="num">{a.count}</td>
+                  <td>{a.observedBuild ?? '—'}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+        {snap.diagnostics.truncated > 0 && (
+          <p className="note">
+            {snap.diagnostics.truncated} further {snap.diagnostics.truncated === 1 ? 'field was' : 'fields were'}{' '}
+            not tracked because a bound was reached. This list is not complete.
+          </p>
+        )}
+      </section>
 
       <section className="card">
         <h2>Ingest</h2>

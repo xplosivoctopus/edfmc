@@ -148,8 +148,14 @@ which is why it is the one implemented first.
 - Anything at all while an integration is switched off
 
 The privacy manifests in `packages/integrations/src/registry.ts` are rendered
-directly by the Integrations screen and are **checked by tests against the
-sanitiser**, so the promise and the code cannot drift apart.
+directly by the **Connections & Data Sharing** screen and are **checked by tests
+against the sanitiser**, so the promise and the code cannot drift apart.
+
+That list is *intersected* across the integrations, not concatenated
+(`universalNeverShares`): a guarantee that holds for three services and not the
+fourth is not a guarantee, and printing it as one at the top of the page would
+be the most consequential kind of wrong that screen could be. Anything covered
+by some but not all of them appears in the per-service lists instead.
 
 ---
 

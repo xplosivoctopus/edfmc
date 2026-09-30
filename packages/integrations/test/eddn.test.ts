@@ -243,21 +243,39 @@ describe('the privacy manifest is a claim the code must honour', () => {
 
 describe('off means off', () => {
   it('refuses transmission while disabled', () => {
-    expect(mayTransmit(INTEGRATIONS.eddn, { enabled: false, hasCredential: true })).toBe(false);
-    expect(integrationStatus(INTEGRATIONS.eddn, { enabled: false, hasCredential: true })).toBe(
-      'disabled',
-    );
+    // Tested on a built descriptor, because `implemented: false` would satisfy
+    // this assertion for the wrong reason and keep passing if the switch itself
+    // broke.
+    const built = { ...INTEGRATIONS.eddn, implemented: true };
+    expect(mayTransmit(built, { enabled: false, hasCredential: true })).toBe(false);
+    expect(integrationStatus(built, { enabled: false, hasCredential: true })).toBe('disabled');
   });
 
-  it('permits transmission for EDDN when enabled, since it needs no credential', () => {
-    expect(mayTransmit(INTEGRATIONS.eddn, { enabled: true, hasCredential: false })).toBe(true);
+  it('permits transmission without a credential when none is required', () => {
+    const built = { ...INTEGRATIONS.eddn, implemented: true };
+    expect(built.privacy.requiresCredential).toBe(false);
+    expect(mayTransmit(built, { enabled: true, hasCredential: false })).toBe(true);
+  });
+
+  it('reports EDDN as unbuilt while the submission step is not connected', () => {
+    /*
+     * The builder, sanitiser and queue in this package are finished and tested.
+     * Nothing feeds them from live journal events yet, so EDDN must not claim to
+     * be transmitting.
+     *
+     * This test is the tripwire for finishing the wiring: connect the submission
+     * loop and flip `implemented`, and this failure is the reminder to delete it.
+     */
+    expect(INTEGRATIONS.eddn.implemented).toBe(false);
+    expect(INTEGRATIONS.eddn.pendingReason).toBeTruthy();
+    expect(mayTransmit(INTEGRATIONS.eddn, { enabled: true, hasCredential: true })).toBe(false);
   });
 
   it('refuses an integration that is not built, however it is configured', () => {
-    // The important one. Three of four are designed and not implemented, and a
+    // The important one. None of the four transmits yet, and a
     // switch that appears to work while nothing is sent is worse than one that
     // says so.
-    for (const id of ['edsm', 'inara', 'edastro'] as const) {
+    for (const id of ['eddn', 'edsm', 'inara', 'edastro'] as const) {
       expect(mayTransmit(INTEGRATIONS[id], { enabled: true, hasCredential: true }), id).toBe(false);
       expect(integrationStatus(INTEGRATIONS[id], { enabled: true, hasCredential: true }), id).toBe(
         'not-implemented',

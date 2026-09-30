@@ -8,6 +8,7 @@
 import Database from '@tauri-apps/plugin-sql';
 import { invoke } from '@tauri-apps/api/core';
 import {
+  AnomalyLedger,
   JournalEngine,
   applyEvent,
   initialState,
@@ -18,6 +19,7 @@ import {
   type Known,
   type IngestStats,
   type JournalCheckpoint,
+  type FieldAnomaly,
   type NormalizedEvent,
 } from '@edfm/elite-journal';
 
@@ -94,7 +96,16 @@ import {
   type ActivityGroup,
 } from '@edfm/activity';
 import { DEFAULT_GUIDANCE_MODE, type GuidanceMode } from '@edfm/context';
-import { INTEGRATIONS, type IntegrationId } from '@edfm/integrations';
+import {
+  EMPTY_QUEUE,
+  INTEGRATIONS,
+  integrationsList,
+  sharingAudit,
+  type IntegrationId,
+  type QueueSummary,
+  type SharingAudit,
+  type SharingInput,
+} from '@edfm/integrations';
 import {
   backfillCarrierIdentities,
   backfillCarrierJumps,
@@ -247,6 +258,26 @@ export interface CompanionSnapshot {
   >;
   /** Bound setter, so the screen needs no import of the companion singleton. */
   readonly setIntegrationEnabled: (id: IntegrationId, enabled: boolean) => Promise<void>;
+  /**
+   * What has actually left this machine, for the active commander.
+   *
+   * Read from the queue and the per-integration state rather than inferred from
+   * the switches, because "switched on" and "has sent something" are different
+   * claims and only the second one is evidence.
+   */
+  readonly sharing: SharingAudit;
+  /**
+   * Journal fields whose type changed, and what the app knows about itself.
+   *
+   * Structural metadata only: event name, field name, the two types, a count and
+   * the game build. No field values, because this panel is the thing that ends
+   * up in a screenshot attached to a bug report.
+   */
+  readonly diagnostics: DiagnosticsView;
+  /** Bring forward every waiting retry for one integration. */
+  readonly retrySharingNow: (id: IntegrationId) => Promise<void>;
+  /** Discard permanently-rejected items, which will never be sent. */
+  readonly clearSharingRejected: (id: IntegrationId) => Promise<void>;
   readonly contextRuleVersion: number;
   readonly contextRuleSource: string;
   readonly missions: MissionView;
@@ -257,6 +288,18 @@ export interface CompanionSnapshot {
   readonly contributions: ContributionView;
   readonly logistics: LogisticsView;
   readonly plugins: PluginView;
+}
+
+/** What the app knows about itself and about the journal's shape. */
+export interface DiagnosticsView {
+  readonly appVersion: string;
+  /** Game version the journal is reporting, or null before a header is seen. */
+  readonly gameVersion: string | null;
+  readonly anomalies: readonly FieldAnomaly[];
+  readonly eventsTracked: number;
+  readonly fieldsTracked: number;
+  /** Non-zero when a bound was reached, so the list is not implied complete. */
+  readonly truncated: number;
 }
 
 /**
@@ -468,6 +511,7 @@ export class Companion {
       this.integrationState = { ...this.integrationState, [id]: { enabled, hasCredential } };
     }
     this.notify();
+    await this.loadSharingState();
   }
 
   /**
@@ -490,6 +534,153 @@ export class Companion {
     if (fid !== null) {
       await this.setSetting(`integration.${id}.${fid}.enabled`, String(enabled));
     }
+  };
+
+  /**
+   * Queue depth and last-transmission facts, per integration.
+   *
+   * Empty until read from the database. An empty map renders as "nothing has
+   * ever been sent", which is the truthful default: if the state cannot be read,
+   * claiming activity would be the wrong way to be wrong.
+   */
+  private sharingState: Partial<Record<IntegrationId, SharingInput>> = {};
+
+  /**
+   * Read what the queue and integration state actually record.
+   *
+   * Scoped to the active commander for the counts that describe *their* data,
+   * with one deliberate exception: `unattributed` counts rows whose owner could
+   * not be established. Those are never sent to anyone, and they belong on the
+   * audit screen precisely because they are nobody's -- silently omitting them
+   * would make "nothing queued" mean two different things.
+   */
+  private async loadSharingState(): Promise<void> {
+    if (!this.db) return;
+    const fid = this.discoveryFid;
+    const next: Partial<Record<IntegrationId, SharingInput>> = {};
+
+    for (const id of Object.keys(this.integrationState) as IntegrationId[]) {
+      const switches = this.integrationState[id];
+      let queue: QueueSummary = EMPTY_QUEUE;
+      let lastSuccessAt: string | null = null;
+      let lastError: string | null = null;
+
+      try {
+        const counts =
+          fid === null
+            ? []
+            : await this.db.select<Array<{ status: string; n: number }>>(
+                `SELECT status, COUNT(*) AS n FROM integration_queue
+                  WHERE integration = $1 AND commander_fid = $2 GROUP BY status`,
+                [id, fid],
+              );
+
+        const orphans = await this.db.select<Array<{ n: number }>>(
+          `SELECT COUNT(*) AS n FROM integration_queue
+            WHERE integration = $1 AND commander_fid IS NULL`,
+          [id],
+        );
+
+        const due =
+          fid === null
+            ? []
+            : await this.db.select<Array<{ next_attempt_at: string | null }>>(
+                `SELECT MIN(next_attempt_at) AS next_attempt_at FROM integration_queue
+                  WHERE integration = $1 AND commander_fid = $2 AND status = 'retryable'`,
+                [id, fid],
+              );
+
+        const at = (status: string): number =>
+          Number(counts.find((r) => r.status === status)?.n ?? 0);
+
+        queue = {
+          queued: at('queued'),
+          attempting: at('attempting'),
+          accepted: at('accepted'),
+          retryable: at('retryable'),
+          rejected: at('rejected'),
+          unattributed: Number(orphans[0]?.n ?? 0),
+          nextAttemptAt: due[0]?.next_attempt_at ?? null,
+        };
+
+        if (fid !== null) {
+          const state = await this.db.select<
+            Array<{ last_success_at: string | null; last_error: string | null }>
+          >(
+            `SELECT last_success_at, last_error FROM integration_state
+              WHERE integration = $1 AND commander_fid = $2`,
+            [id, fid],
+          );
+          lastSuccessAt = state[0]?.last_success_at ?? null;
+          lastError = state[0]?.last_error ?? null;
+        }
+      } catch (err) {
+        // A failed read must not become a claim. Leaving the defaults in place
+        // reports "nothing sent" rather than inventing a state.
+        logger.warn('integrations', 'Could not read sharing state', {
+          integration: id,
+          error: String(err),
+        });
+      }
+
+      next[id] = {
+        enabled: switches.enabled,
+        hasCredential: switches.hasCredential,
+        queue,
+        lastSuccessAt,
+        lastError,
+      };
+    }
+
+    this.sharingState = next;
+    this.notify();
+  }
+
+  /**
+   * Bring forward every waiting retry for one integration.
+   *
+   * Clears the stored backoff so the next drain picks the rows up. It does not
+   * reset the attempt count: the commander asking sooner is not a reason to
+   * grant more attempts against a service that keeps refusing.
+   */
+  readonly retrySharingNow = async (id: IntegrationId): Promise<void> => {
+    if (!this.db || this.discoveryFid === null) return;
+    if (!INTEGRATIONS[id]?.implemented) return;
+    try {
+      await this.db.execute(
+        `UPDATE integration_queue
+            SET status = 'queued', next_attempt_at = NULL, updated_at = $3
+          WHERE integration = $1 AND commander_fid = $2 AND status = 'retryable'`,
+        [id, this.discoveryFid, new Date().toISOString()],
+      );
+    } catch (err) {
+      logger.warn('integrations', 'Retry request failed', { integration: id, error: String(err) });
+    }
+    await this.loadSharingState();
+  };
+
+  /**
+   * Discard permanently-rejected items.
+   *
+   * Only `rejected` rows, and only this commander's: those will never be sent
+   * however long they are kept, so removing them is the one queue deletion that
+   * loses nothing. Anything still retryable is left alone.
+   */
+  readonly clearSharingRejected = async (id: IntegrationId): Promise<void> => {
+    if (!this.db || this.discoveryFid === null) return;
+    try {
+      await this.db.execute(
+        `DELETE FROM integration_queue
+          WHERE integration = $1 AND commander_fid = $2 AND status = 'rejected'`,
+        [id, this.discoveryFid],
+      );
+    } catch (err) {
+      logger.warn('integrations', 'Clearing rejected items failed', {
+        integration: id,
+        error: String(err),
+      });
+    }
+    await this.loadSharingState();
   };
 
   private readonly activity = new ActivityEngine({ commanderFid: null });
@@ -699,6 +890,22 @@ export class Companion {
         appearance: this.appearance,
         integrations: this.integrationState,
         setIntegrationEnabled: this.setIntegrationEnabled,
+        sharing: sharingAudit({
+          descriptors: integrationsList(),
+          state: this.sharingState,
+          commanderName: isKnown(this.state.commander) ? this.state.commander : null,
+          commanderFid: this.discoveryFid,
+        }),
+        diagnostics: {
+          appVersion: COMPANION_VERSION,
+          gameVersion: isKnown(this.state.gameVersion) ? this.state.gameVersion : null,
+          anomalies: this.anomalyLedger.anomalies(),
+          eventsTracked: this.anomalyLedger.eventsTracked,
+          fieldsTracked: this.anomalyLedger.fieldsTracked,
+          truncated: this.anomalyLedger.truncatedCount,
+        },
+        retrySharingNow: this.retrySharingNow,
+        clearSharingRejected: this.clearSharingRejected,
         contextRuleVersion: this.resolver.version,
         contextRuleSource: this.resolver.source,
         missions: this.missionView(),
@@ -760,6 +967,20 @@ export class Companion {
     });
   }
 
+  /**
+   * Start ingest.
+   *
+   * Never rejects. Startup touches the native layer, the database and the disk,
+   * and an escaping rejection here is the worst-behaved failure this app has:
+   * `connection` stays on `'starting'`, so the window sits on "Starting"
+   * indefinitely with nothing to click and nothing in the UI saying why. An
+   * error state is recoverable — the commander can read it, set a path, and
+   * restart — so every unexpected throw is turned into one.
+   *
+   * The individual `try`/`catch` blocks inside `bootstrap` are still worth
+   * having: each one lets startup *continue* past a failure that is survivable.
+   * This is the backstop for the ones nobody predicted.
+   */
   async start(): Promise<void> {
     // Idempotent: React StrictMode intentionally mounts effects twice in
     // development, and starting two engines against one journal would double
@@ -767,6 +988,17 @@ export class Companion {
     if (this.started) return;
     this.started = true;
 
+    try {
+      await this.bootstrap();
+    } catch (err) {
+      this.connection = 'error';
+      this.lastError = `Startup failed: ${String(err)}`;
+      logger.error('app', 'Startup failed', { error: String(err) });
+      this.notify();
+    }
+  }
+
+  private async bootstrap(): Promise<void> {
     try {
       this.db = await Database.load('sqlite:edfm-companion.db');
       logger.info('db', 'Local database ready');
@@ -870,7 +1102,16 @@ export class Companion {
     });
 
     if (!resolution.directory) {
-      this.connection = 'no-directory';
+      /*
+       * A probe that never answered is an error, not an absence. The badge for
+       * `no-directory` reads "No journal folder", which is a claim about the
+       * machine that this run did not establish -- and it points the commander
+       * at the folder setting, which is the wrong place when the check itself
+       * is what failed. The resolver keeps those two cases apart; throwing that
+       * away one layer up would waste the distinction.
+       */
+      this.connection = resolution.strategy === 'probe-failed' ? 'error' : 'no-directory';
+      if (resolution.strategy === 'probe-failed') this.lastError = resolution.detail;
       this.notify();
       return;
     }
@@ -996,8 +1237,26 @@ export class Companion {
     this.notify();
   }
 
+  /**
+   * Structural anomalies seen this session.
+   *
+   * Machine-local and session-scoped rather than per commander: a field changing
+   * type is a fact about the *game build*, not about whose save it is, and
+   * attributing it to a commander would imply their data caused it. Not
+   * persisted -- it rebuilds from the journal on every launch, and a stored
+   * baseline would carry an old build's shapes forward as if they were current.
+   */
+  private readonly anomalyLedger = new AnomalyLedger();
+
   private onEvent(event: NormalizedEvent): void {
     applyEvent(this.state, event);
+
+    // Before anything interprets the event: record whether its shape is what it
+    // has been. Types only, never values -- see packages/elite-journal/src/anomalies.ts.
+    this.anomalyLedger.observe(event.source.event, event.source.raw, {
+      gameVersion: event.source.provenance.gameVersion,
+      timestamp: event.source.provenance.timestamp,
+    });
 
     // A commander switch must not inherit the previous commander's discoveries.
     // Checked before anything is recorded against the new state.
@@ -1506,16 +1765,15 @@ export class Companion {
     if (!this.db) return;
     try {
       /*
-       * Scoped to the commander, and to rows that predate the scoping.
+       * Strictly this commander's.
        *
-       * A NULL commander_fid means "written before migration 11, owner
-       * unknown". Those are claimed by the first commander seen after the
-       * upgrade -- correct for a single-commander install, which is almost
-       * everyone, and better than the alternative for a shared one, which was
-       * showing every commander's missions to all of them.
+       * A NULL owner means migration 12 could not establish one -- more than one
+       * commander has used this installation, so the rows could belong to either.
+       * They are excluded from every commander's view rather than shown to all of
+       * them, and are kept on disk for a future rebuild to attribute properly.
        */
       const rows = await this.db.select<MissionRow[]>(
-        'SELECT * FROM missions WHERE commander_fid IS NULL OR commander_fid = $1',
+        'SELECT * FROM missions WHERE commander_fid = $1',
         [this.discoveryFid],
       );
       this.missions.load(rows.map(fromRow));
@@ -2176,7 +2434,7 @@ export class Companion {
     try {
       const rows = await this.db.select<Array<Record<string, unknown>>>(
         `SELECT * FROM construction_sites
-          WHERE commander_fid IS NULL OR commander_fid = $1
+          WHERE commander_fid = $1
           ORDER BY priority, updated_at DESC`,
         [this.discoveryFid],
       );

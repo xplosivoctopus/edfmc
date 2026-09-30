@@ -16,6 +16,13 @@ import { BUNDLED_RULES, sanitise, RULE_LIMITS, DEFAULT_GUIDANCE_MODE } from '@ed
 
 import { Companion } from '../src/lib/companion.js';
 import {
+  VALIDATED_ELITE_BUILD,
+  aboutStatus,
+  compareBuilds,
+  isNewerThanValidated,
+  newerBuildNotice,
+} from '../src/lib/about.js';
+import {
   APPEARANCE_BOUNDS,
   DEFAULT_APPEARANCE,
   DEFAULT_WIDGETS,
@@ -216,16 +223,38 @@ describe('integrations', () => {
     // A switch that appears to work while nothing is sent is worse than one that
     // says it is unfinished.
     const c = new Companion();
-    for (const id of ['edsm', 'inara', 'edastro'] as const) {
+    for (const id of ['eddn', 'edsm', 'inara', 'edastro'] as const) {
       void c.setIntegrationEnabled(id, true);
       expect(c.snapshot().integrations[id].enabled, id).toBe(false);
     }
   });
 
-  it('enables the one integration that is built', () => {
-    const c = new Companion();
-    void c.setIntegrationEnabled('eddn', true);
-    expect(c.snapshot().integrations.eddn.enabled).toBe(true);
+  it('reports no sharing activity, because none is wired yet', () => {
+    /*
+     * EDDN's message builder, sanitiser and queue are finished and tested, but
+     * nothing feeds them from live journal events, so the audit must say so.
+     *
+     * This asserts the honest state rather than an aspiration. When the
+     * submission loop is connected, this test fails -- which is the reminder to
+     * update it deliberately instead of discovering later that the screen had
+     * been claiming activity all along.
+     */
+    const snap = new Companion().snapshot();
+    expect(snap.sharing.nothingEverSent).toBe(true);
+    expect(snap.sharing.totalPending).toBe(0);
+    for (const row of snap.sharing.rows) {
+      expect(row.transmission, row.id).toBe('not-built');
+      expect(row.everSent, row.id).toBe(false);
+      expect(row.canRetryNow, row.id).toBe(false);
+    }
+  });
+
+  it('never puts a field value in the diagnostics view', () => {
+    // The journal-shape panel is the thing most likely to be screenshotted into
+    // a bug report, so it carries type names and counts only.
+    const snap = new Companion().snapshot();
+    expect(snap.diagnostics.anomalies).toEqual([]);
+    expect(snap.diagnostics.appVersion.length).toBeGreaterThan(0);
   });
 
   it('never exposes a credential through the snapshot', () => {
@@ -242,5 +271,58 @@ describe('integrations', () => {
   it('keeps snapshot identity stable with integrations in the store', () => {
     const c = new Companion();
     expect(c.snapshot().integrations).toBe(c.snapshot().integrations);
+  });
+});
+
+describe('version and build status', () => {
+  it('reports one value per component, read from where it is defined', () => {
+    const status = aboutStatus({ appVersion: '0.1.0', connectedBuild: '4.4.0.3' });
+    expect(status.appVersion).toBe('0.1.0');
+    expect(status.contextRules).toBeGreaterThan(0);
+    expect(status.pluginApi).toBeGreaterThan(0);
+    expect(status.exobiologySchema).toBeGreaterThan(0);
+    expect(status.validatedBuild).toBe(VALIDATED_ELITE_BUILD);
+  });
+
+  it('compares builds numerically, not as text', () => {
+    // The trap: 4.10.0.0 is newer than 4.9.0.0 and sorts the other way as a
+    // string, which would silently suppress the notice the first time Frontier
+    // ships a double-digit minor.
+    expect(compareBuilds('4.10.0.0', '4.9.0.0')).toBe(1);
+    expect(compareBuilds('4.9.0.0', '4.10.0.0')).toBe(-1);
+    expect(compareBuilds('4.4.0.3', '4.4.0.3')).toBe(0);
+    // Missing parts count as zero rather than as missing.
+    expect(compareBuilds('4.5', '4.5.0.0')).toBe(0);
+    expect(compareBuilds('4.5.0.1', '4.5')).toBe(1);
+  });
+
+  it('says nothing when the game matches or predates what was measured', () => {
+    expect(isNewerThanValidated(VALIDATED_ELITE_BUILD)).toBe(false);
+    expect(isNewerThanValidated('4.3.0.0')).toBe(false);
+    expect(isNewerThanValidated(null)).toBe(false);
+  });
+
+  it('notices a newer build', () => {
+    expect(isNewerThanValidated('4.5.0.0')).toBe(true);
+    const notice = newerBuildNotice(aboutStatus({ appVersion: '0.1.0', connectedBuild: '4.5.0.0' }));
+    expect(notice).toContain('4.5.0.0');
+    expect(notice).toContain(VALIDATED_ELITE_BUILD);
+  });
+
+  it('does not imply anything is broken', () => {
+    // "We have not checked yet" is not "this does not work". Wording that
+    // suggested breakage would teach commanders to ignore the notice.
+    const notice = newerBuildNotice(aboutStatus({ appVersion: '0.1.0', connectedBuild: '4.5.0.0' }))!;
+    for (const alarming of ['incompatible', 'unsupported', 'error', 'broken', 'not supported']) {
+      expect(notice.toLowerCase(), alarming).not.toContain(alarming);
+    }
+    expect(notice).toContain('preserved');
+  });
+
+  it('stays silent for a build string it cannot parse', () => {
+    // A garbled build must not produce a notice nobody can act on.
+    for (const junk of ['', 'unknown', '4.x.0', 'r330683/r0']) {
+      expect(isNewerThanValidated(junk), junk).toBe(false);
+    }
   });
 });

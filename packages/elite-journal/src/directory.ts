@@ -92,7 +92,20 @@ export function selectActiveJournal(files: readonly JournalFile[]): JournalFile 
   return null;
 }
 
-export type ResolutionStrategy = 'manual-override' | 'known-folder' | 'env-fallback' | 'none';
+export type ResolutionStrategy =
+  | 'manual-override'
+  | 'known-folder'
+  | 'env-fallback'
+  /**
+   * A probe threw rather than answering.
+   *
+   * Distinct from `none` on the same principle the rest of this project runs on:
+   * "we looked and it is not there" and "we could not look" are different facts,
+   * and only the first one means *set a path in Settings*. Collapsing them would
+   * send a commander to fix a path that was never the problem.
+   */
+  | 'probe-failed'
+  | 'none';
 
 export interface DirectoryResolution {
   readonly directory: string | null;
@@ -115,8 +128,34 @@ export interface ResolveOptions {
 }
 
 /**
+ * Outcome of a single existence probe.
+ *
+ * Three-valued on purpose. `false` means the probe answered and the path is not
+ * there; `'failed'` means it never answered at all. The injected probe is backed
+ * by an IPC call to the native layer on the desktop, and IPC can fail for
+ * reasons that have nothing to do with the path being asked about.
+ */
+type ProbeResult = true | false | 'failed';
+
+async function probe(
+  exists: (path: string) => Promise<boolean>,
+  path: string,
+): Promise<{ readonly result: ProbeResult; readonly error: string | null }> {
+  try {
+    return { result: await exists(path), error: null };
+  } catch (err) {
+    return { result: 'failed', error: String(err) };
+  }
+}
+
+/**
  * Resolve the journal directory, reporting which strategy succeeded so the UI can
  * tell the user *why* it is looking where it is looking.
+ *
+ * Never rejects. A probe that throws is reported as `probe-failed`, because this
+ * runs during startup and a rejection here left the app wedged on "Starting"
+ * with no visible cause — the exact silent-hang failure the app's own smoke
+ * tests exist to catch.
  */
 export async function resolveJournalDirectory(
   options: ResolveOptions = {},
@@ -125,12 +164,30 @@ export async function resolveJournalDirectory(
   const exists = options.exists ?? ((p: string) => fs.isDirectory(p));
   const GAME_SUBPATH = fs.join('Frontier Developments', 'Elite Dangerous');
 
+  // Remembered so that a run which found nothing can say whether it actually
+  // looked. Only the first failure is kept: they will share a cause, and one
+  // message a person can act on beats a concatenated list of the same error.
+  let probeError: string | null = null;
+  const note = (error: string | null): void => {
+    if (error !== null && probeError === null) probeError = error;
+  };
+
   if (options.manualOverride) {
-    const ok = await exists(options.manualOverride);
+    const { result, error } = await probe(exists, options.manualOverride);
+    if (result === 'failed') {
+      return {
+        directory: null,
+        strategy: 'probe-failed',
+        // Explicitly not "does not exist": the path may well be fine.
+        detail:
+          `Could not check the path configured in Settings (${options.manualOverride}). ` +
+          `The check itself failed: ${error}`,
+      };
+    }
     return {
-      directory: ok ? options.manualOverride : null,
+      directory: result ? options.manualOverride : null,
       strategy: 'manual-override',
-      detail: ok
+      detail: result
         ? 'Using the path configured in Settings.'
         : `Configured path does not exist: ${options.manualOverride}`,
     };
@@ -138,7 +195,9 @@ export async function resolveJournalDirectory(
 
   if (options.savedGamesPath) {
     const candidate = fs.join(options.savedGamesPath, GAME_SUBPATH);
-    if (await exists(candidate)) {
+    const { result, error } = await probe(exists, candidate);
+    note(error);
+    if (result === true) {
       return {
         directory: candidate,
         strategy: 'known-folder',
@@ -149,10 +208,15 @@ export async function resolveJournalDirectory(
 
   // Last resort only. Documented as a fallback because USERPROFILE can be
   // relocated or absent, and Saved Games can be redirected away from it.
+  //
+  // Still attempted after a failed known-folder probe: the two paths are
+  // different, and one failing does not establish that the other will.
   const home = process.env['USERPROFILE'] ?? process.env['HOME'];
   if (home) {
     const candidate = fs.join(home, 'Saved Games', GAME_SUBPATH);
-    if (await exists(candidate)) {
+    const { result, error } = await probe(exists, candidate);
+    note(error);
+    if (result === true) {
       return {
         directory: candidate,
         strategy: 'env-fallback',
@@ -161,6 +225,16 @@ export async function resolveJournalDirectory(
           'Set an explicit path in Settings if this is wrong.',
       };
     }
+  }
+
+  if (probeError !== null) {
+    return {
+      directory: null,
+      strategy: 'probe-failed',
+      detail:
+        'Could not check whether the journal directory exists; the check itself failed: ' +
+        `${probeError}. Setting an explicit path in Settings may not help until this is resolved.`,
+    };
   }
 
   return {
