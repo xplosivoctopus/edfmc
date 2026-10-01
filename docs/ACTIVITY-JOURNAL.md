@@ -168,6 +168,28 @@ One species per genus per body (90 of 90) and one variant per species (90 of 90)
 so a row is keyed by genus and its species and variant columns stay null until
 sampled.
 
+### Base values come from the wiki, and were checked against the game
+
+The overlay shows a species' **base Vista Genomics value** and **minimum sampling
+distance** once it has been sampled, transcribed from the EDFM organism index at
+`https://edfieldmanual.com/wiki/Exobiology` into `packages/activity/src/species.ts`.
+
+Verified against the corpus before being shown, because a confidently wrong
+number is worse than none:
+
+- All **26** species the journal has ever reported appear in the table, so
+  `Species_Localised` is the right key and the names match exactly.
+- For the **14** species actually sold, the table's value equals the
+  `SellOrganicData.Value` the game paid — 14 of 14, no mismatches.
+
+**Base value excludes the first-to-log bonus**, which Frontier does not document
+as a formula, so the figure is a floor rather than a prediction.
+
+**Nothing is shown on an unscanned row.** A surface scan reports a genus, and a
+genus spans species worth very different amounts — Bacterium alone runs from
+1,000,000 to 8,418,000 Cr. A figure there would be a guess with a number
+attached.
+
 ### What the journal does not establish
 
 **Whether leaving discards progress.** An earlier version cleared a run on

@@ -14,6 +14,7 @@ import { openUrl } from '@tauri-apps/plugin-opener';
 import { Logistics } from './Logistics';
 import { FirstRunGuidance, GuidanceChoice } from './Guidance';
 import { Integrations } from './Integrations';
+import { ScreenshotDialog, ScreenshotSettings, Screenshots } from './Screenshots';
 import { aboutStatus, newerBuildNotice } from './lib/about';
 import { Journal } from './Journal';
 import { Research } from './Research';
@@ -58,6 +59,7 @@ const SECTIONS = [
   'Research',
   'Contributions',
   'Connections',
+  'Screenshots',
   'Plugins',
   'Settings',
   'Diagnostics',
@@ -74,6 +76,7 @@ const IMPLEMENTED: ReadonlySet<Section> = new Set<Section>([
   'Research',
   'Contributions',
   'Connections',
+  'Screenshots',
   'Plugins',
   'Settings',
   'Diagnostics',
@@ -142,10 +145,14 @@ export default function App() {
         {section === 'Research' && <Research snap={snap} />}
         {section === 'Contributions' && <Contributions snap={snap} />}
         {section === 'Connections' && <Integrations snap={snap} />}
+        {section === 'Screenshots' && <Screenshots snap={snap} />}
         {section === 'Plugins' && <PluginsScreen snap={snap} />}
         {section === 'Settings' && <Settings snap={snap} />}
         {section === 'Diagnostics' && <Diagnostics snap={snap} />}
         {!IMPLEMENTED.has(section) && <Placeholder section={section} />}
+        {/* Above whatever is open: a capture needs answering now, not after
+            navigating somewhere. */}
+        <ScreenshotDialog snap={snap} />
       </main>
     </div>
   );
@@ -1026,6 +1033,8 @@ function Settings({ snap }: { snap: Snap }) {
       <header className="page-head">
         <h1>Settings</h1>
       </header>
+
+      <ScreenshotSettings snap={snap} />
 
       <section className="card">
         <h2>Guidance</h2>

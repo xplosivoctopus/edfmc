@@ -24,6 +24,18 @@ import {
 } from '@edfm/elite-journal';
 
 import {
+  DEFAULT_CATEGORY,
+  normaliseTags,
+  prefill,
+  resolveCollision,
+  sanitiseSegment,
+  validateHotkey,
+  type CaptureContext,
+  type Prefill,
+  type ScreenshotRecord,
+} from './screenshots.js';
+
+import {
   BUNDLED_RULES,
   ContextResolver,
   resourceUrl,
@@ -92,8 +104,11 @@ import { credentialPresent } from './credentials.js';
 import {
   ActivityEngine,
   LiveActivityTracker,
+  formatCredits,
   rowStatus,
+  speciesInfo,
   type BodyRef,
+  type CompletedRecord,
   type SpeciesProgress,
   groupActivity,
   type ActivityEntry,
@@ -293,6 +308,120 @@ export interface CompanionSnapshot {
   readonly contributions: ContributionView;
   readonly logistics: LogisticsView;
   readonly plugins: PluginView;
+  readonly screenshots: ScreenshotView;
+  /** Capture now. Bound so a hotkey handler needs no import of the singleton. */
+  readonly captureScreenshot: () => Promise<void>;
+  readonly saveScreenshot: (draft: ScreenshotSaveRequest) => Promise<void>;
+  readonly discardScreenshotDraft: () => void;
+  readonly setScreenshotHotkey: (binding: string | null) => Promise<string | null>;
+  readonly setScreenshotFolder: (path: string) => Promise<boolean>;
+  readonly updateScreenshot: (id: string, patch: Partial<ScreenshotRecord>) => Promise<void>;
+  readonly removeScreenshotFromCatalog: (id: string) => Promise<void>;
+  readonly deleteScreenshotImage: (id: string) => Promise<void>;
+}
+
+/** What the confirmation dialog sends back. */
+export interface ScreenshotSaveRequest {
+  readonly filename: string;
+  /** Skip the rename entirely and catalog the file where it landed. */
+  readonly keepOriginalName: boolean;
+  readonly category: string;
+  readonly subject: string;
+  readonly systemName: string;
+  readonly bodyName: string;
+  readonly stationName: string;
+  readonly tags: readonly string[];
+  readonly note: string;
+  /** Null unless the commander ticked the link. Never set automatically. */
+  readonly activityEntryId: string | null;
+}
+
+/**
+ * Strip anything path-shaped out of a message bound for a log.
+ *
+ * §21: a screenshot path names a folder under the commander's account and
+ * often their Windows username. Diagnostics say what failed, never where.
+ */
+export function sanitisePath(detail: string): string {
+  return detail
+    .replace(/[A-Za-z]:\\[^\s"']*/g, '<path>')
+    .replace(/\\\\[^\s"']+/g, '<path>')
+    .replace(/\/(?:[\w.-]+\/){2,}[\w.-]*/g, '<path>')
+    .slice(0, 300);
+}
+
+function screenshotFromRow(r: Record<string, unknown>): ScreenshotRecord {
+  const text = (v: unknown): string | null => (typeof v === 'string' && v.length > 0 ? v : null);
+  let tags: string[] = [];
+  try {
+    const parsed = JSON.parse(String(r['tags'] ?? '[]')) as unknown;
+    if (Array.isArray(parsed)) tags = parsed.filter((t): t is string => typeof t === 'string');
+  } catch {
+    // A corrupt tag list is not a reason to hide the screenshot.
+    tags = [];
+  }
+  return {
+    id: String(r['id']),
+    commanderFid: String(r['commander_fid']),
+    filePath: String(r['file_path']),
+    capturedAt: String(r['captured_at']),
+    category: String(r['category']),
+    subject: text(r['subject']),
+    systemName: text(r['system_name']),
+    bodyName: text(r['body_name']),
+    stationName: text(r['station_name']),
+    settlement: text(r['settlement']),
+    tags,
+    note: text(r['note']),
+    activityEntryId: text(r['activity_entry_id']),
+    width: typeof r['width'] === 'number' ? r['width'] : null,
+    height: typeof r['height'] === 'number' ? r['height'] : null,
+  };
+}
+
+/**
+ * A capture waiting for the commander to say what it is.
+ *
+ * Held in the store rather than passed through an event, so a reload or a
+ * re-render cannot lose it. The image is already written to disk by this point:
+ * nothing here risks the screenshot itself.
+ */
+export interface ScreenshotDraft {
+  /** Where the capture currently lives. Renamed only once confirmed. */
+  readonly stagingPath: string;
+  readonly capturedAt: string;
+  readonly width: number;
+  readonly height: number;
+  /** `elite-window` or `primary-monitor`. */
+  readonly source: string;
+  /**
+   * The image is a single flat colour, which is what exclusive fullscreen looks
+   * like through a screen read. Surfaced so the commander is told rather than
+   * cataloguing a black rectangle.
+   */
+  readonly looksBlank: boolean;
+  readonly suggestion: Prefill;
+}
+
+export interface ScreenshotView {
+  /** Null until the commander chooses one. Nothing is bound by default. */
+  readonly hotkey: string | null;
+  /** Null until resolved; the Pictures folder by default. */
+  readonly folder: string | null;
+  readonly folderWritable: boolean;
+  readonly recent: readonly ScreenshotRecord[];
+  /** The capture awaiting confirmation, if any. */
+  readonly draft: ScreenshotDraft | null;
+  /**
+   * True when the form had to fall back to the main window.
+   *
+   * Normally the form opens in its own window over the game. If that window
+   * cannot be shown, the capture is still answerable here rather than being
+   * stranded.
+   */
+  readonly draftInMainWindow: boolean;
+  /** Last failure, already sanitised of paths. */
+  readonly lastError: string | null;
 }
 
 /** What the app knows about itself and about the journal's shape. */
@@ -469,6 +598,630 @@ function safeJsonStrings(text: string): string[] {
 
 export class Companion {
   private started = false;
+  /* ------------------------------------------------------- screenshots */
+
+  private screenshotHotkey: string | null = null;
+  private screenshotFolder: string | null = null;
+  private screenshotFolderOk = false;
+  private screenshotDraft: ScreenshotDraft | null = null;
+  private draftInMainWindow = false;
+  private captureRepliesBound = false;
+  private screenshotList: ScreenshotRecord[] = [];
+  private screenshotError: string | null = null;
+
+  /** Newest first, and bounded: the browser pages rather than holding everything. */
+  private static readonly SCREENSHOTS_IN_MEMORY = 300;
+
+  /**
+   * Resolve the folder captures are saved into.
+   *
+   * Defaults to `Pictures/EDFM Companion/Screenshots`, reached through the
+   * known-folder API rather than by appending "Pictures" to the user profile:
+   * the folder is relocatable, and on a machine where it has been moved a
+   * string-built path is simply wrong.
+   *
+   * Images never go into application data. A commander's screenshots belong
+   * somewhere they can find them without knowing this app exists.
+   */
+  private async loadScreenshotSettings(): Promise<void> {
+    this.screenshotHotkey = (await this.getSetting('screenshot.hotkey')) ?? null;
+
+    const stored = await this.getSetting('screenshot.folder');
+    if (stored) {
+      this.screenshotFolder = stored;
+    } else {
+      try {
+        const pictures = await invoke<string | null>('pictures_dir');
+        this.screenshotFolder = pictures
+          ? `${pictures}\\EDFM Companion\\Screenshots`
+          : null;
+      } catch {
+        this.screenshotFolder = null;
+      }
+    }
+
+    this.screenshotFolderOk = await this.checkScreenshotFolder();
+    await this.registerScreenshotHotkey();
+    this.notify();
+  }
+
+  private async checkScreenshotFolder(): Promise<boolean> {
+    if (!this.screenshotFolder) return false;
+    try {
+      return await invoke<boolean>('folder_writable', { path: this.screenshotFolder });
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * Bind the chosen hotkey, if there is one.
+   *
+   * **Nothing is bound unless the commander chose it.** Elite players run dense
+   * keyboard and HOTAS setups, and silently claiming a combination could break
+   * something they rely on mid-flight.
+   */
+  private async registerScreenshotHotkey(): Promise<void> {
+    try {
+      const { unregisterAll, register } = await import('@tauri-apps/plugin-global-shortcut');
+      await unregisterAll();
+      if (!this.screenshotHotkey) return;
+      await register(this.screenshotHotkey, (event) => {
+        // The plugin fires for press and release; one capture per press.
+        if (event.state !== undefined && event.state !== 'Pressed') return;
+        void this.captureScreenshot();
+      });
+    } catch (err) {
+      // A combination the OS will not give us is a normal outcome, not a crash.
+      this.screenshotError =
+        'That key combination could not be registered. Another application may already own it.';
+      logger.warn('screenshot', 'Hotkey registration failed', { error: String(err) });
+      this.notify();
+    }
+  }
+
+  /**
+   * Choose or clear the capture hotkey.
+   *
+   * Returns null on success, or a reason. Clearing is passing null, which is
+   * also the shipped state.
+   */
+  readonly setScreenshotHotkey = async (binding: string | null): Promise<string | null> => {
+    if (binding !== null) {
+      const check = validateHotkey(binding);
+      if (!check.ok) return check.reason;
+    }
+
+    const previous = this.screenshotHotkey;
+    this.screenshotHotkey = binding;
+    this.screenshotError = null;
+    await this.registerScreenshotHotkey();
+
+    if (this.screenshotError !== null) {
+      // Registration failed: put the old binding back rather than leaving the
+      // commander with a setting that reads as active and does nothing.
+      const reason = this.screenshotError;
+      this.screenshotHotkey = previous;
+      await this.registerScreenshotHotkey();
+      this.screenshotError = reason;
+      this.notify();
+      return reason;
+    }
+
+    await this.setSetting('screenshot.hotkey', binding ?? '');
+    this.notify();
+    return null;
+  };
+
+  readonly setScreenshotFolder = async (path: string): Promise<boolean> => {
+    const trimmed = path.trim();
+    if (trimmed.length === 0) return false;
+    let ok = false;
+    try {
+      ok = await invoke<boolean>('folder_writable', { path: trimmed });
+    } catch {
+      ok = false;
+    }
+    if (!ok) {
+      // §22: never quietly save somewhere unexpected.
+      this.screenshotError = 'That folder cannot be written to. Captures would have nowhere to go.';
+      this.notify();
+      return false;
+    }
+    this.screenshotFolder = trimmed;
+    this.screenshotFolderOk = true;
+    this.screenshotError = null;
+    await this.setSetting('screenshot.folder', trimmed);
+    this.notify();
+    return true;
+  };
+
+  /**
+   * What the app believes right now, for prefilling.
+   *
+   * Assembled here because this is the only place that can see every source at
+   * once. Each field is read from what was actually observed; nothing is
+   * inferred to fill a gap.
+   */
+  private captureContext(): CaptureContext {
+    const live = this.liveActivity.state?.exobiology ?? null;
+    const active = live?.rows.find((r) => !r.completed && r.samplesTaken !== 0) ?? null;
+    const newest = this.activityEntries[0] ?? null;
+
+    const systemName = isKnown(this.state.starSystem) ? this.state.starSystem : null;
+    const stateBody = isKnown(this.state.body) ? this.state.body : null;
+
+    return {
+      systemName,
+      /*
+       * A body equal to the system name carries nothing: in supercruise and
+       * witchspace the game reports the main star, whose name is the system's,
+       * and prefilling it produced rows reading "Wregoe VQ-V b48-0 · Wregoe
+       * VQ-V b48-0".
+       */
+      bodyName: live?.bodyName ?? (stateBody === systemName ? null : stateBody),
+      stationName: isKnown(this.state.stationName) ? this.state.stationName : null,
+      settlement: null,
+      shipName: isKnown(this.state.ship) ? this.state.ship : null,
+      sampling:
+        active && active.species
+          ? {
+              species: active.species,
+              genus: active.genus,
+              colour: active.colour,
+              samplesTaken: active.samplesTaken,
+              samplesRequired: active.samplesRequired,
+              completed: active.completed,
+            }
+          : null,
+      latestEntry: newest
+        ? {
+            id: newest.id,
+            title: newest.title,
+            occurredAt: newest.occurredAt,
+            category: newest.category,
+          }
+        : null,
+    };
+  }
+
+  /**
+   * Capture, and open the confirmation dialog.
+   *
+   * The image is written to a staging file first and renamed only after the
+   * commander confirms, so a cancelled dialog, a rejected filename or an
+   * unavailable destination can never lose it.
+   */
+  readonly captureScreenshot = async (): Promise<void> => {
+    if (this.screenshotDraft !== null) return; // one at a time
+
+    this.screenshotError = null;
+    try {
+      const staging = `${this.screenshotFolder ?? ''}\\.edfm-pending`;
+      const result = await invoke<{
+        path: string;
+        width: number;
+        height: number;
+        source: string;
+        looks_blank: boolean;
+      }>('capture_screenshot', { stagingDir: staging });
+
+      const capturedAt = new Date().toISOString();
+      this.screenshotDraft = {
+        stagingPath: result.path,
+        capturedAt,
+        width: result.width,
+        height: result.height,
+        source: result.source,
+        looksBlank: result.looks_blank,
+        suggestion: prefill(this.captureContext()),
+      };
+      this.notify();
+
+      await this.openCaptureWindow();
+    } catch (err) {
+      // §22: a failed capture produces an error, never a catalog entry.
+      this.screenshotError = 'The screenshot could not be captured.';
+      logger.warn('screenshot', 'Capture failed', { error: sanitisePath(String(err)) });
+      this.notify();
+    }
+  };
+
+  /**
+   * Show the form over the game.
+   *
+   * A separate always-on-top window, positioned on the game's monitor. In
+   * Borderless this draws over Elite, which keeps rendering behind it """ + DASH + """ the
+   * commander answers one question without leaving the cockpit view.
+   *
+   * The overlay is **not** touched. It stays click-through throughout: making it
+   * interactive for a form and restoring it afterwards is exactly the state that
+   * gets left switched on when an error path is taken, and a second window
+   * cannot leave the first in a bad state.
+   *
+   * Falls back to the main window if that window cannot be shown, because a
+   * capture that cannot be answered is worse than one answered in the wrong
+   * place.
+   */
+  private async openCaptureWindow(): Promise<void> {
+    const draft = this.screenshotDraft;
+    if (!draft) return;
+
+    try {
+      const [{ WebviewWindow }, { emit }] = await Promise.all([
+        import('@tauri-apps/api/webviewWindow'),
+        import('@tauri-apps/api/event'),
+      ]);
+
+      const win = await WebviewWindow.getByLabel('capture');
+      if (!win) throw new Error('no capture window');
+
+      await this.bindCaptureReplies();
+
+      // Centre it on the game's monitor rather than the primary one: on a
+      // multi-monitor setup the form belongs where the commander is looking.
+      try {
+        const info = await invoke<{
+          found: boolean;
+          x: number;
+          y: number;
+          width: number;
+          height: number;
+        }>('elite_window_info');
+        if (info.found && info.width > 0 && info.height > 0) {
+          const { LogicalPosition } = await import('@tauri-apps/api/dpi');
+          await win.setPosition(
+            new LogicalPosition(
+              Math.round(info.x + info.width / 2 - 260),
+              Math.round(info.y + info.height / 2 - 330),
+            ),
+          );
+        } else {
+          await win.center();
+        }
+      } catch {
+        await win.center();
+      }
+
+      await emit('capture-draft', {
+        draft,
+        folder: this.screenshotFolder,
+        error: this.screenshotError,
+      });
+
+      await win.show();
+      await win.setAlwaysOnTop(true);
+      await win.setFocus();
+      this.draftInMainWindow = false;
+      this.notify();
+    } catch (err) {
+      /*
+       * The window could not be shown. The draft is already in the store and
+       * the image is already on disk, so the main window renders the same form
+       * instead.
+       */
+      logger.warn('screenshot', 'Capture window unavailable; using the main window', {
+        error: String(err),
+      });
+      this.draftInMainWindow = true;
+      this.notify();
+      try {
+        const { getCurrentWindow } = await import('@tauri-apps/api/window');
+        const w = getCurrentWindow();
+        await w.show();
+        await w.unminimize();
+        await w.setFocus();
+      } catch {
+        // Focus is a convenience; the form is on screen regardless.
+      }
+    }
+  }
+
+  /**
+   * Listen for the capture window's answer, once.
+   *
+   * Bound lazily rather than at startup so a commander who never sets a hotkey
+   * never registers listeners for a feature they do not use.
+   */
+  private async bindCaptureReplies(): Promise<void> {
+    if (this.captureRepliesBound) return;
+    this.captureRepliesBound = true;
+
+    const { listen } = await import('@tauri-apps/api/event');
+
+    await listen<ScreenshotSaveRequest>('capture-save', (e) => {
+      void this.saveScreenshot(e.payload);
+    });
+    await listen('capture-cancel', () => {
+      this.discardScreenshotDraft();
+    });
+  }
+
+  /** Tell the capture window it may close, or why it may not. */
+  private async closeCaptureWindow(problem: string | null): Promise<void> {
+    try {
+      const { emit } = await import('@tauri-apps/api/event');
+      if (problem === null) {
+        await emit('capture-done');
+      } else {
+        // Reopened with the reason rather than closing on a failure the
+        // commander has not seen.
+        await emit('capture-error', problem);
+      }
+    } catch {
+      // The window may already be gone; nothing here depends on it.
+    }
+  }
+
+  readonly discardScreenshotDraft = (): void => {
+    this.screenshotDraft = null;
+    this.draftInMainWindow = false;
+    this.screenshotError = null;
+    void this.closeCaptureWindow(null);
+    this.notify();
+  };
+
+  /**
+   * Rename the staged capture and catalog it.
+   *
+   * Order matters: the file is moved first, and the row is written only if that
+   * succeeded. A catalog entry pointing at a file that was never created would
+   * be worse than no entry.
+   */
+  readonly saveScreenshot = async (request: ScreenshotSaveRequest): Promise<void> => {
+    const draft = this.screenshotDraft;
+    if (!draft) return;
+
+    const folder = this.screenshotFolder;
+    if (!folder) {
+      this.screenshotError = 'No screenshot folder is set.';
+      this.notify();
+      return;
+    }
+
+    let finalPath = draft.stagingPath;
+
+    if (!request.keepOriginalName) {
+      const wanted = sanitiseSegment(request.filename) || sanitiseSegment(`Screenshot`);
+      const named = wanted.toLowerCase().endsWith('.png') ? wanted : `${wanted}.png`;
+
+      // Collisions are resolved against the disk, never by overwriting.
+      let resolved: string;
+      try {
+        resolved = await this.resolveOnDisk(folder, named);
+      } catch {
+        resolved = named;
+      }
+
+      try {
+        finalPath = await invoke<string>('commit_screenshot', {
+          from: draft.stagingPath,
+          to: `${folder}\\${resolved}`,
+        });
+      } catch (err) {
+        /*
+         * §22: keep the original file and the draft. The commander can correct
+         * the name and try again; nothing has been lost.
+         */
+        this.screenshotError =
+          'The screenshot could not be moved to your folder. It is still saved, under its temporary name.';
+        logger.warn('screenshot', 'Commit failed', { error: sanitisePath(String(err)) });
+        void this.closeCaptureWindow(this.screenshotError);
+        this.notify();
+        return;
+      }
+    }
+
+    await this.catalogScreenshot(draft, request, finalPath);
+    this.screenshotDraft = null;
+    this.draftInMainWindow = false;
+    void this.closeCaptureWindow(null);
+    this.notify();
+  };
+
+  /** Ask the filesystem, one candidate at a time, so nothing is overwritten. */
+  private async resolveOnDisk(folder: string, name: string): Promise<string> {
+    const checked = new Map<string, boolean>();
+    const exists = (candidate: string): boolean => checked.get(candidate) ?? false;
+
+    // Probe up to a handful of candidates; `resolveCollision` is pure, so the
+    // answers are gathered first.
+    let current = name;
+    for (let i = 0; i < 16; i += 1) {
+      const taken = await invoke<boolean>('path_exists', { path: `${folder}\\${current}` });
+      checked.set(current, taken);
+      if (!taken) return current;
+      current = resolveCollision(name, exists);
+    }
+    return current;
+  }
+
+  private async catalogScreenshot(
+    draft: ScreenshotDraft,
+    request: ScreenshotSaveRequest,
+    filePath: string,
+  ): Promise<void> {
+    const fid = this.discoveryFid;
+    if (!this.db || fid === null) {
+      // Without a commander there is nobody to attribute it to, and §14 forbids
+      // guessing. The image is saved; only the catalog row is skipped.
+      this.screenshotError =
+        'The image was saved, but no commander is identified yet, so it was not catalogued.';
+      return;
+    }
+
+    const now = new Date().toISOString();
+    const record: ScreenshotRecord = {
+      id: `${draft.capturedAt}:${filePath}`,
+      commanderFid: fid,
+      filePath,
+      capturedAt: draft.capturedAt,
+      category: request.category || DEFAULT_CATEGORY,
+      subject: request.subject?.trim() || null,
+      systemName: request.systemName?.trim() || null,
+      bodyName: request.bodyName?.trim() || null,
+      stationName: request.stationName?.trim() || null,
+      settlement: null,
+      tags: normaliseTags(request.tags),
+      note: request.note?.trim() || null,
+      activityEntryId: request.activityEntryId,
+      width: draft.width,
+      height: draft.height,
+    };
+
+    try {
+      await this.db.execute(
+        `INSERT OR REPLACE INTO screenshots
+           (id, commander_fid, file_path, captured_at, category, subject,
+            system_name, body_name, station_name, settlement, tags, note,
+            activity_entry_id, context_snapshot, width, height, created_at, updated_at)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$17)`,
+        [
+          record.id,
+          record.commanderFid,
+          record.filePath,
+          record.capturedAt,
+          record.category,
+          record.subject,
+          record.systemName,
+          record.bodyName,
+          record.stationName,
+          record.settlement,
+          JSON.stringify(record.tags),
+          record.note,
+          record.activityEntryId,
+          // What the app believed, kept so a bad suggestion can later be told
+          // apart from a bad choice.
+          JSON.stringify({ source: draft.source, suggested: draft.suggestion.category.value }),
+          record.width,
+          record.height,
+          now,
+        ],
+      );
+      this.screenshotList = [record, ...this.screenshotList].slice(
+        0,
+        Companion.SCREENSHOTS_IN_MEMORY,
+      );
+    } catch (err) {
+      this.screenshotError = 'The image was saved, but it could not be catalogued.';
+      logger.warn('screenshot', 'Catalog write failed', { error: sanitisePath(String(err)) });
+    }
+  }
+
+  /** Load this commander's catalog. Never another's. */
+  private async loadScreenshots(): Promise<void> {
+    if (!this.db || this.discoveryFid === null) {
+      this.screenshotList = [];
+      return;
+    }
+    try {
+      const rows = await this.db.select<Array<Record<string, unknown>>>(
+        `SELECT id, commander_fid, file_path, captured_at, category, subject,
+                system_name, body_name, station_name, settlement, tags, note,
+                activity_entry_id, width, height
+           FROM screenshots
+          WHERE commander_fid = $1
+          ORDER BY captured_at DESC
+          LIMIT $2`,
+        [this.discoveryFid, Companion.SCREENSHOTS_IN_MEMORY],
+      );
+      this.screenshotList = rows.map((r) => screenshotFromRow(r));
+    } catch (err) {
+      logger.warn('screenshot', 'Could not read the catalog', { error: String(err) });
+      this.screenshotList = [];
+    }
+    this.notify();
+  }
+
+  readonly updateScreenshot = async (
+    id: string,
+    patch: Partial<ScreenshotRecord>,
+  ): Promise<void> => {
+    if (!this.db || this.discoveryFid === null) return;
+    const i = this.screenshotList.findIndex((r) => r.id === id);
+    if (i === -1) return;
+
+    const next: ScreenshotRecord = {
+      ...this.screenshotList[i]!,
+      ...patch,
+      tags: normaliseTags(patch.tags ?? this.screenshotList[i]!.tags),
+    };
+
+    try {
+      await this.db.execute(
+        `UPDATE screenshots
+            SET category = $3, subject = $4, system_name = $5, body_name = $6,
+                station_name = $7, tags = $8, note = $9, activity_entry_id = $10,
+                updated_at = $11
+          WHERE id = $1 AND commander_fid = $2`,
+        [
+          id,
+          this.discoveryFid,
+          next.category,
+          next.subject,
+          next.systemName,
+          next.bodyName,
+          next.stationName,
+          JSON.stringify(next.tags),
+          next.note,
+          next.activityEntryId,
+          new Date().toISOString(),
+        ],
+      );
+      this.screenshotList = this.screenshotList.map((r) => (r.id === id ? next : r));
+      this.notify();
+    } catch (err) {
+      logger.warn('screenshot', 'Could not update the catalog', { error: String(err) });
+    }
+  };
+
+  /**
+   * Forget a screenshot without touching the image.
+   *
+   * §16 requires these to be two different actions, because one is reversible
+   * by re-cataloguing and the other destroys a file.
+   */
+  readonly removeScreenshotFromCatalog = async (id: string): Promise<void> => {
+    if (!this.db || this.discoveryFid === null) return;
+    try {
+      await this.db.execute('DELETE FROM screenshots WHERE id = $1 AND commander_fid = $2', [
+        id,
+        this.discoveryFid,
+      ]);
+      this.screenshotList = this.screenshotList.filter((r) => r.id !== id);
+      this.notify();
+    } catch (err) {
+      logger.warn('screenshot', 'Could not remove the catalog entry', { error: String(err) });
+    }
+  };
+
+  /** Delete the image as well. Only ever from an explicit confirmation. */
+  readonly deleteScreenshotImage = async (id: string): Promise<void> => {
+    const row = this.screenshotList.find((r) => r.id === id);
+    if (!row) return;
+    try {
+      await invoke<void>('delete_screenshot_file', { path: row.filePath });
+    } catch (err) {
+      this.screenshotError = 'The image could not be deleted.';
+      logger.warn('screenshot', 'File delete failed', { error: sanitisePath(String(err)) });
+      this.notify();
+      return;
+    }
+    await this.removeScreenshotFromCatalog(id);
+  };
+
+  private screenshotView(): ScreenshotView {
+    return {
+      hotkey: this.screenshotHotkey,
+      folder: this.screenshotFolder,
+      folderWritable: this.screenshotFolderOk,
+      recent: this.screenshotList,
+      draft: this.screenshotDraft,
+      draftInMainWindow: this.draftInMainWindow,
+      lastError: this.screenshotError,
+    };
+  }
+
   /* -------------------------------------------------- activity journal */
 
   /**
@@ -925,6 +1678,15 @@ export class Companion {
         verificationEnabled: this.verificationEnabled,
         research: this.researchView(),
         plugins: this.pluginView,
+        screenshots: this.screenshotView(),
+        captureScreenshot: this.captureScreenshot,
+        saveScreenshot: this.saveScreenshot,
+        discardScreenshotDraft: this.discardScreenshotDraft,
+        setScreenshotHotkey: this.setScreenshotHotkey,
+        setScreenshotFolder: this.setScreenshotFolder,
+        updateScreenshot: this.updateScreenshot,
+        removeScreenshotFromCatalog: this.removeScreenshotFromCatalog,
+        deleteScreenshotImage: this.deleteScreenshotImage,
         logistics: {
           sites: [...this.sites.values()].sort(
             (a, b) => a.priority - b.priority || b.updatedAt.localeCompare(a.updatedAt),
@@ -1082,6 +1844,8 @@ export class Companion {
     };
 
     await this.loadIntegrationState();
+    await this.loadScreenshotSettings();
+    await this.loadScreenshots();
 
     this.overlayEnabled = (await this.getSetting('overlayEnabled')) === 'true';
     // Defaults to true when never set, matching the checkbox's default.
@@ -1335,11 +2099,21 @@ export class Companion {
 
     // Arriving somewhere asks for that body's stored rows; changes ask to be
     // written back. Both are async and neither gates ingest.
+    // A commander already on a planet when the app started gets no
+    // `ApproachBody`; their location is known from state instead.
+    this.enterCurrentBody();
+
     const hydrate = this.liveActivity.takeHydrationRequest();
     if (hydrate !== null) void this.hydrateBodyRoster(hydrate);
 
     const dirty = this.liveActivity.takeDirtyRows();
     if (dirty.length > 0) void this.saveExobiologyRows(this.liveActivity.currentBody, dirty);
+
+    // Genus lists for bodies scanned from orbit. Written now so that landing on
+    // one later is a read rather than a rescan.
+    for (const pending of this.liveActivity.takePendingRosters()) {
+      void this.saveExobiologyRows(pending.body, pending.rows);
+    }
 
     if (liveChanged) {
       this.liveActivity.setSystem(
@@ -1753,6 +2527,8 @@ export class Companion {
     // Integrations belong to the commander whose account they are linked to.
     // Reloaded so one commander's switches never apply to another's data.
     await this.loadIntegrationState();
+    await this.loadScreenshotSettings();
+    await this.loadScreenshots();
 
     logger.info('discovery', 'Commander changed; discovery state swapped', {
       // FIDs identify a person's account; only whether one was present is logged.
@@ -2065,12 +2841,97 @@ export class Companion {
           updatedAt: r.updated_at,
         })),
       );
+      await this.applyJournalCompletions(ref);
+
       this.notify();
       if (this.overlayEnabled) this.pushOverlayState();
     } catch (err) {
       // A failed read leaves the roster as whatever this session has observed,
       // which is incomplete rather than wrong.
       logger.warn('activity', 'Could not read exobiology progress', { error: String(err) });
+    }
+  }
+
+  /**
+   * Let the Activity Journal correct the roster.
+   *
+   * The Journal is the durable record of what was actually finished: one
+   * `sample-completed` entry per specimen, derived from an `Analyse` event, with
+   * an id stable across restart and replay. The progress table beside it only
+   * knows what this process watched happen, so a specimen completed before the
+   * table existed — or in a session whose writes were lost — reads as unscanned
+   * until this runs.
+   *
+   * Cheap: one indexed read per body entered, against rows that are already
+   * commander-scoped.
+   */
+  private async applyJournalCompletions(ref: BodyRef): Promise<void> {
+    if (!this.db || this.discoveryFid === null) return;
+    try {
+      const rows = await this.db.select<Array<{ data: string }>>(
+        `SELECT data FROM activity_entries
+          WHERE commander_fid = $1 AND subtype = 'sample-completed' AND body_id = $2
+            AND (system_address IS NULL OR system_address = $3)`,
+        [this.discoveryFid, ref.bodyId, ref.systemAddress ?? 0],
+      );
+
+      const records: CompletedRecord[] = [];
+      for (const row of rows) {
+        try {
+          const data = JSON.parse(row.data) as Record<string, unknown>;
+          const text = (k: string): string | null =>
+            typeof data[k] === 'string' && data[k] !== '' ? (data[k] as string) : null;
+          records.push({
+            genusToken: text('genusToken'),
+            genus: text('genus'),
+            // The entry carries the species and variant, so a recovered
+            // specimen reads with its full name and value rather than the bare
+            // genus a surface scan would have given.
+            speciesToken: text('speciesToken'),
+            species: text('species'),
+            colour: text('colour'),
+          });
+        } catch {
+          // A single unreadable entry must not stop the rest correcting the roster.
+        }
+      }
+
+      if (this.liveActivity.applyCompleted(records)) {
+        const dirty = this.liveActivity.takeDirtyRows();
+        if (dirty.length > 0) {
+          await this.saveExobiologyRows(this.liveActivity.currentBody, dirty);
+        }
+        this.notify();
+      }
+    } catch (err) {
+      logger.warn('activity', 'Could not read completions from the journal', {
+        error: String(err),
+      });
+    }
+  }
+
+  /**
+   * Show the roster for the body the commander is already on.
+   *
+   * At startup the reader resumes from a byte offset, so somebody standing on a
+   * planet produces no `ApproachBody` and the panel stayed empty until they
+   * happened to scan something. The current location is known from state, so it
+   * is used directly.
+   */
+  private enterCurrentBody(): void {
+    if (this.liveActivity.currentBody !== null) return;
+    if (!isKnown(this.state.bodyId)) return;
+
+    const entered = this.liveActivity.enterKnownBody({
+      systemAddress: isKnown(this.state.systemAddress) ? this.state.systemAddress : null,
+      bodyId: this.state.bodyId,
+      bodyName: isKnown(this.state.body) ? this.state.body : null,
+      systemName: isKnown(this.state.starSystem) ? this.state.starSystem : null,
+    });
+
+    if (entered) {
+      const request = this.liveActivity.takeHydrationRequest();
+      if (request !== null) void this.hydrateBodyRoster(request);
     }
   }
 
@@ -2147,14 +3008,21 @@ export class Companion {
     return {
       kind: 'exobiology',
       bodyName: e.bodyName,
-      rows: e.rows.map((r) => ({
-        genus: r.genus,
-        species: r.species,
-        colour: r.colour,
-        status: rowStatus(r),
-        samplesTaken: r.samplesTaken,
-        samplesRequired: r.samplesRequired,
-      })),
+      rows: e.rows.map((r) => {
+        // Looked up at projection rather than stored: reference data changes
+        // with the game, and a value frozen into a row would quietly go stale.
+        const info = speciesInfo(r.species);
+        return {
+          genus: r.genus,
+          species: r.species,
+          colour: r.colour,
+          status: rowStatus(r),
+          samplesTaken: r.samplesTaken,
+          samplesRequired: r.samplesRequired,
+          value: info ? formatCredits(info.value) : null,
+          sampleDistance: info?.sampleDistance ?? null,
+        };
+      }),
       completedCount: e.completedCount,
       unscannedCount: e.unscannedCount,
       total: e.total,

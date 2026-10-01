@@ -486,3 +486,18 @@ body,
 }
 
 .mission-more { font-size: 0.6875rem; color: #9d9d9d; padding-top: 0.25rem; }
+
+/*
+ * Base value and walking distance, under the organism they belong to.
+ *
+ * A second line rather than a wider row: the organism name is already long, and
+ * this is reference the commander glances at rather than reads.
+ */
+.lx-genus-info {
+  display: flex;
+  gap: 0.625rem;
+  margin: -0.0625rem 0 0.125rem 1.0625rem;
+  font-size: 0.6875rem;
+  color: var(--text-faint);
+  font-variant-numeric: tabular-nums;
+}

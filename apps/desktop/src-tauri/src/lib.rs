@@ -9,6 +9,7 @@ mod credentials;
 mod journal;
 mod overlay;
 mod plugins;
+mod screenshot;
 
 use tauri_plugin_sql::{Migration, MigrationKind};
 
@@ -657,6 +658,69 @@ fn migrations() -> Vec<Migration> {
                 ON exobiology_progress (commander_fid, system_address, body_id, sort_order);
         "#,
         kind: MigrationKind::Up,
+    },
+    Migration {
+        version: 14,
+        description: "catalog screenshots by reference, never by copying them",
+        sql: r#"
+            -- The screenshot catalog.
+            --
+            -- **Metadata only.** `file_path` points at an image in a folder the
+            -- commander chose and can see; no image bytes are stored here and
+            -- nothing is copied into application data. A catalog that quietly
+            -- duplicated every 4K screenshot would consume gigabytes and put the
+            -- commander's pictures somewhere they would never think to look.
+            --
+            -- Commander-scoped. A screenshot can show a ship, a location, a
+            -- fleet carrier or an entire HUD, and showing one commander's
+            -- captures to another on the same machine is both a privacy leak and
+            -- a spoiler.
+            CREATE TABLE IF NOT EXISTS screenshots (
+                id             TEXT    NOT NULL PRIMARY KEY,
+                commander_fid  TEXT    NOT NULL,
+                -- Absolute path to the image, which lives outside this database.
+                file_path      TEXT    NOT NULL,
+                -- ISO 8601, when the capture was taken.
+                captured_at    TEXT    NOT NULL,
+                -- Free text rather than a constrained enum: the category list is
+                -- data, so a later release or an add-on can extend it without a
+                -- migration. Validation belongs with the list, not the column.
+                category       TEXT    NOT NULL,
+                -- What the commander says it is. Never inferred on their behalf.
+                subject        TEXT,
+                system_name    TEXT,
+                body_name      TEXT,
+                station_name   TEXT,
+                settlement     TEXT,
+                -- JSON array. Tags are a handful of short labels, not a taxonomy.
+                tags           TEXT    NOT NULL DEFAULT '[]',
+                note           TEXT,
+                -- Optional link to what the commander was doing. Never set when
+                -- the context is ambiguous.
+                activity_entry_id TEXT,
+                -- What the app believed at capture time, kept so a later mistake
+                -- in prefilling can be told apart from a mistake by the commander.
+                context_snapshot  TEXT,
+                width          INTEGER,
+                height         INTEGER,
+                created_at     TEXT    NOT NULL,
+                updated_at     TEXT    NOT NULL
+            );
+
+            -- The browser reads newest-first for one commander.
+            CREATE INDEX IF NOT EXISTS idx_screenshots_recent
+                ON screenshots (commander_fid, captured_at DESC);
+            -- Filtering by category and by place are the two common narrowings.
+            CREATE INDEX IF NOT EXISTS idx_screenshots_category
+                ON screenshots (commander_fid, category);
+            CREATE INDEX IF NOT EXISTS idx_screenshots_system
+                ON screenshots (commander_fid, system_name);
+            -- One catalog row per file: re-cataloguing the same image replaces
+            -- rather than duplicating.
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_screenshots_path
+                ON screenshots (commander_fid, file_path);
+        "#,
+        kind: MigrationKind::Up,
     }]
 }
 
@@ -664,6 +728,9 @@ fn migrations() -> Vec<Migration> {
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        // Nothing is bound at startup: the hotkey is registered only once the
+        // commander chooses one. See docs/SCREENSHOTS.md.
+        .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         // Outbound HTTP goes through Rust, not the WebView.
         //
         // The WebView's CSP would otherwise have to name the API origin, and the
@@ -747,6 +814,12 @@ pub fn run() {
             overlay::overlay_stop,
             overlay::overlay_set_edit_mode,
             overlay::overlay_push_state,
+            screenshot::capture_screenshot,
+            screenshot::commit_screenshot,
+            screenshot::pictures_dir,
+            screenshot::path_exists,
+            screenshot::folder_writable,
+            screenshot::delete_screenshot_file,
         ])
         .run(tauri::generate_context!())
         .expect("error while running EDFM Companion");

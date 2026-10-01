@@ -33,6 +33,21 @@
         "visible": false,
         "width": 800,
         "height": 600
+      },
+      {
+        "label": "capture",
+        "url": "capture.html",
+        "title": "Screenshot",
+        "decorations": false,
+        "alwaysOnTop": true,
+        "skipTaskbar": true,
+        "resizable": false,
+        "shadow": true,
+        "center": true,
+        "focus": true,
+        "visible": false,
+        "width": 520,
+        "height": 660
       }
     ],
     "security": {

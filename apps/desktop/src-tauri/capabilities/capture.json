@@ -1,0 +1,17 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "capture",
+  "description": "Screenshot confirmation window. Receives a draft by event and sends the answer back the same way; it owns no database, filesystem or network access of its own. It may hide and close itself, which core:window:default does not grant -- that set is read-only.",
+  "windows": [
+    "capture"
+  ],
+  "permissions": [
+    "core:event:default",
+    "core:window:default",
+    "core:webview:default",
+    "core:app:default",
+    "core:window:allow-hide",
+    "core:window:allow-close",
+    "core:window:allow-start-dragging"
+  ]
+}

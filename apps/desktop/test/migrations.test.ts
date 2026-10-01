@@ -103,7 +103,7 @@ function owners(db: DatabaseSync, table: string): Array<string | null> {
 describe('migration extraction', () => {
   it('finds the real migrations in the Rust source', () => {
     const all = migrations();
-    expect(all.length).toBeGreaterThanOrEqual(13);
+    expect(all.length).toBeGreaterThanOrEqual(14);
     expect(all.map((m) => m.version)).toEqual([...all.map((m) => m.version)].sort((a, b) => a - b));
     // Versions are unique: two migrations sharing one would silently not run.
     expect(new Set(all.map((m) => m.version)).size).toBe(all.length);
@@ -434,6 +434,143 @@ describe('exobiology progress survives leaving', () => {
     migrate(db, 99);
     const after = db.prepare('SELECT COUNT(*) AS n FROM exobiology_progress').get() as { n: number };
     expect(after.n).toBe(1);
+    db.close();
+  });
+});
+
+describe('the screenshot catalog', () => {
+  function add(db: DatabaseSync, over: Record<string, unknown> = {}) {
+    const row = {
+      id: 'shot-1',
+      fid: 'F1',
+      path: 'C:/Users/Someone/Pictures/EDFM Companion/Screenshots/a.png',
+      at: '2026-09-30T14:22:18Z',
+      category: 'exobiology',
+      subject: 'Bacterium Vesicula — Gold',
+      system: 'Wregoe XX-X d1-42',
+      body: '3 A',
+      tags: '["Exobiology","Gold"]',
+      entry: null,
+      ...over,
+    };
+    db.prepare(
+      `INSERT INTO screenshots
+         (id, commander_fid, file_path, captured_at, category, subject,
+          system_name, body_name, tags, activity_entry_id, created_at, updated_at)
+       VALUES (?,?,?,?,?,?,?,?,?,?,'2026-09-30T14:22:18Z','2026-09-30T14:22:18Z')`,
+    ).run(
+      row.id, row.fid, row.path, row.at, row.category, row.subject,
+      row.system, row.body, row.tags, row.entry,
+    );
+  }
+
+  it('stores a reference, never the image', () => {
+    /*
+     * §13 and §12: the catalog holds a path to a file in a folder the commander
+     * chose and can see. A catalog that duplicated every 4K screenshot would
+     * consume gigabytes and hide their pictures somewhere they would never look.
+     */
+    const db = new DatabaseSync(':memory:');
+    migrate(db, 99);
+    const columns = (db.prepare('PRAGMA table_info(screenshots)').all() as Array<{ name: string }>)
+      .map((c) => c.name);
+
+    expect(columns).toContain('file_path');
+    // Nothing that could hold image bytes.
+    for (const forbidden of ['image', 'data', 'blob', 'bytes', 'thumbnail']) {
+      expect(columns, forbidden).not.toContain(forbidden);
+    }
+    db.close();
+  });
+
+  it('keeps one commander out of another commander catalog', () => {
+    // §14. A screenshot can show a ship, a carrier or an entire HUD.
+    const db = new DatabaseSync(':memory:');
+    migrate(db, 99);
+    add(db, { id: 'mine', fid: 'F1' });
+    add(db, { id: 'theirs', fid: 'F2', path: 'C:/other.png' });
+
+    const mine = db.prepare('SELECT id FROM screenshots WHERE commander_fid = ?').all('F1');
+    expect(mine).toHaveLength(1);
+    expect((mine[0] as { id: string }).id).toBe('mine');
+    db.close();
+  });
+
+  it('does not catalog the same file twice for one commander', () => {
+    const db = new DatabaseSync(':memory:');
+    migrate(db, 99);
+    add(db, { id: 'a' });
+    expect(() => add(db, { id: 'b' })).toThrow();
+    db.close();
+  });
+
+  it('lets two commanders each catalog the same shared file', () => {
+    // The uniqueness is per commander, not global: the same image on a shared
+    // machine is a legitimate entry for each of them.
+    const db = new DatabaseSync(':memory:');
+    migrate(db, 99);
+    add(db, { id: 'a', fid: 'F1' });
+    expect(() => add(db, { id: 'b', fid: 'F2' })).not.toThrow();
+    db.close();
+  });
+
+  it('allows a screenshot with no location at all', () => {
+    /*
+     * §9: location is not mandatory. A menu, a ship or a UI capture may have no
+     * meaningful place, and a NOT NULL would have forced an invented one.
+     */
+    const db = new DatabaseSync(':memory:');
+    migrate(db, 99);
+    expect(() =>
+      add(db, { id: 'menu', system: null, body: null, subject: null }),
+    ).not.toThrow();
+    db.close();
+  });
+
+  it('allows a screenshot with no journal link', () => {
+    // §15: a screenshot can exist without one, and ambiguity means no link.
+    const db = new DatabaseSync(':memory:');
+    migrate(db, 99);
+    add(db, { entry: null });
+    const row = db.prepare('SELECT activity_entry_id FROM screenshots').get() as {
+      activity_entry_id: string | null;
+    };
+    expect(row.activity_entry_id).toBeNull();
+    db.close();
+  });
+
+  it('accepts a category it has never heard of', () => {
+    /*
+     * §7: categories are data, not a closed enum, so a later release or an
+     * add-on can extend the list without a migration.
+     */
+    const db = new DatabaseSync(':memory:');
+    migrate(db, 99);
+    expect(() => add(db, { id: 'x', category: 'thargoid-encounter' })).not.toThrow();
+    db.close();
+  });
+
+  it('survives a relaunch', () => {
+    const db = new DatabaseSync(':memory:');
+    migrate(db, 99);
+    add(db);
+    migrate(db, 99);
+    const n = db.prepare('SELECT COUNT(*) AS n FROM screenshots').get() as { n: number };
+    expect(n.n).toBe(1);
+    db.close();
+  });
+
+  it('removing a catalog row leaves no trace of the file being deleted', () => {
+    /*
+     * §16: removing from the catalog and deleting the image are different
+     * actions. The row goes; nothing here touches the filesystem.
+     */
+    const db = new DatabaseSync(':memory:');
+    migrate(db, 99);
+    add(db);
+    db.prepare('DELETE FROM screenshots WHERE id = ? AND commander_fid = ?').run('shot-1', 'F1');
+    const n = db.prepare('SELECT COUNT(*) AS n FROM screenshots').get() as { n: number };
+    expect(n.n).toBe(0);
     db.close();
   });
 });

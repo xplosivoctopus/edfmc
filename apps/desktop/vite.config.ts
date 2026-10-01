@@ -15,6 +15,9 @@ export default defineConfig(async () => ({
       input: {
         main: resolve(__dirname, 'index.html'),
         overlay: resolve(__dirname, 'overlay.html'),
+        // Likewise its own document: it must sit over the game, take focus, and
+        // be sized to a form rather than to the main window.
+        capture: resolve(__dirname, 'capture.html'),
       },
     },
   },

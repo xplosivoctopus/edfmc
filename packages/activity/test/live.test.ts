@@ -511,3 +511,223 @@ describe('commander separation', () => {
     expect(t.state).not.toBeNull();
   });
 });
+
+describe('a scan done from orbit is not thrown away', () => {
+  /*
+   * The bug this covers: the surface scan is normally done from orbit *before*
+   * approaching -- 99 of 122 scans in the corpus had no prior `ApproachBody`
+   * for that body -- and the handler discarded any scan for a body the
+   * commander was not already at. So landing on a five-signal planet showed one
+   * organism: the one being sampled, with no roster at all.
+   */
+  it('keeps a roster learned before arriving', () => {
+    const t = tracker();
+    // Scanned from orbit: not at the body yet.
+    expect(t.observe(dss([[STRATUM, 'Stratum'], [BACTERIAL, 'Bacterium']]), bodies)).toBe(false);
+    expect(t.state).toBeNull();
+
+    // Handed to the caller to store, rather than dropped.
+    const pending = t.takePendingRosters();
+    expect(pending).toHaveLength(1);
+    expect(pending[0]!.body.bodyId).toBe(12);
+    expect(pending[0]!.rows.map((r) => r.genus)).toEqual(['Stratum', 'Bacterium']);
+    // Nothing collected from any of them yet.
+    for (const row of pending[0]!.rows) expect(row.samplesTaken).toBe(0);
+  });
+
+  it('hands each scanned body over once', () => {
+    const t = tracker();
+    t.observe(dss([[STRATUM, 'Stratum']], 12), bodies);
+    t.observe(dss([[BACTERIAL, 'Bacterium']], 13), bodies);
+    expect(t.takePendingRosters()).toHaveLength(2);
+    // Consumed by reading, so a body is not rewritten on every journal line.
+    expect(t.takePendingRosters()).toHaveLength(0);
+  });
+
+  it('shows the whole roster on arrival, once it has been stored', () => {
+    // The end-to-end shape: scan from orbit, store, land, see everything.
+    const t = tracker();
+    t.observe(dss([[STRATUM, 'Stratum'], [BACTERIAL, 'Bacterium'], [CONCHA, 'Concha']]), bodies);
+    const stored = t.takePendingRosters()[0]!;
+
+    t.observe(approach(), bodies);
+    const ref = t.takeHydrationRequest()!;
+    t.hydrate(ref, stored.rows);
+
+    expect(t.state!.exobiology.rows).toHaveLength(3);
+    expect(t.state!.exobiology.unscannedCount).toBe(3);
+  });
+
+  it('still updates the roster for the body underfoot', () => {
+    // A scan of the current body goes straight into the live state, not the
+    // pending pile.
+    const t = tracker();
+    t.observe(approach(), bodies);
+    expect(t.observe(dss([[STRATUM, 'Stratum']]), bodies)).toBe(true);
+    expect(t.state!.exobiology.rows).toHaveLength(1);
+    expect(t.takePendingRosters()).toHaveLength(0);
+  });
+});
+
+/** A completion as the Activity Journal would have recorded it. */
+const done = (
+  over: Partial<import('../src/live.js').CompletedRecord> = {},
+): import('../src/live.js').CompletedRecord => ({
+  genusToken: STRATUM,
+  genus: 'Stratum',
+  speciesToken: '$Codex_Ent_Stratum_04_Name;',
+  species: 'Stratum Tectonicas',
+  colour: 'Emerald',
+  ...over,
+});
+
+describe('the Activity Journal is authoritative for completion', () => {
+  /*
+   * The progress rows only know what *this* process watched happen. The
+   * Journal's `sample-completed` entries are derived from `Analyse` events with
+   * ids stable across restart and replay, so a specimen finished in an earlier
+   * session -- or one whose progress write was lost -- must still read as done.
+   */
+  it('marks a genus complete from the journal alone', () => {
+    const t = atBody([[STRATUM, 'Stratum'], [BACTERIAL, 'Bacterium']]);
+    expect(rowStatus(row(t, STRATUM))).toBe('unscanned');
+
+    expect(t.applyCompleted([done()])).toBe(true);
+
+    const r = row(t, STRATUM);
+    expect(r.completed).toBe(true);
+    expect(r.samplesTaken).toBe(SAMPLES_REQUIRED);
+    expect(rowStatus(r)).toBe('complete');
+    // The other is untouched.
+    expect(rowStatus(row(t, BACTERIAL))).toBe('unscanned');
+  });
+
+  it('accepts a localised name, because older entries stored only that', () => {
+    const t = atBody([[STRATUM, 'Stratum']]);
+    expect(t.applyCompleted([done({ genusToken: null })])).toBe(true);
+    expect(row(t, STRATUM).completed).toBe(true);
+  });
+
+  it('corrects a partial count that the journal says is finished', () => {
+    // The case from the overlay: 2 / 3 showing for a specimen already banked.
+    const t = atBody([[STRATUM, 'Stratum']]);
+    t.observe(scan('Log'), bodies);
+    t.observe(scan('Sample'), bodies);
+    expect(stageText(row(t, STRATUM))).toBe('2 / 3');
+
+    t.applyCompleted([done()]);
+    expect(row(t, STRATUM).completed).toBe(true);
+    expect(stageText(row(t, STRATUM))).toBe('3 / 3');
+  });
+
+  it('reports the corrected rows so they are written back', () => {
+    const t = atBody([[STRATUM, 'Stratum']]);
+    t.takeDirtyRows();
+    t.applyCompleted([done()]);
+    expect(t.takeDirtyRows().map((r) => r.genusToken)).toEqual([STRATUM]);
+  });
+
+  it('changes nothing when the journal names a genus this body does not have', () => {
+    const t = atBody([[STRATUM, 'Stratum']]);
+    expect(t.applyCompleted([done({ genusToken: '$Codex_Ent_Nowhere_Name;', genus: 'Nowhere' })])).toBe(false);
+    expect(rowStatus(row(t, STRATUM))).toBe('unscanned');
+  });
+
+  it('clears the active organism when the journal says it is already done', () => {
+    const t = atBody([[STRATUM, 'Stratum']]);
+    t.observe(scan('Log'), bodies);
+    expect(t.state!.exobiology.activeGenusToken).toBe(STRATUM);
+    t.applyCompleted([done()]);
+    expect(t.state!.exobiology.activeGenusToken).toBeNull();
+  });
+});
+
+describe('a commander already on a planet when the app starts', () => {
+  it('can be placed on a body without a journal event', () => {
+    /*
+     * The reader resumes from a byte offset, so somebody standing on a planet
+     * produces no `ApproachBody` and the panel stayed empty until they happened
+     * to scan something.
+     */
+    const t = tracker();
+    expect(
+      t.enterKnownBody({
+        systemAddress: 1234,
+        bodyId: 12,
+        bodyName: 'Nervi 4 a',
+        systemName: 'Nervi',
+      }),
+    ).toBe(true);
+
+    const request = t.takeHydrationRequest();
+    expect(request?.bodyId).toBe(12);
+  });
+
+  it('does not re-enter a body it is already on', () => {
+    const t = atBody();
+    expect(
+      t.enterKnownBody({
+        systemAddress: 1234,
+        bodyId: 12,
+        bodyName: 'Nervi 4 a',
+        systemName: 'Nervi',
+      }),
+    ).toBe(false);
+  });
+});
+
+describe('a recovered specimen keeps its name', () => {
+  it('restores species and variant, not just the completed flag', () => {
+    /*
+     * The gap this closes: after a restart the roster showed "Fonticulua 3 / 3"
+     * -- the bare genus, which is all a surface scan gives -- with no variant
+     * and therefore no value. The Journal entry carries the species and colour,
+     * so there is no reason to show less.
+     */
+    const t = atBody([[STRATUM, 'Stratum']]);
+    expect(row(t, STRATUM).species).toBeNull();
+
+    t.applyCompleted([done()]);
+
+    const r = row(t, STRATUM);
+    expect(r.species).toBe('Stratum Tectonicas');
+    expect(r.colour).toBe('Emerald');
+    expect(r.speciesToken).toBe('$Codex_Ent_Stratum_04_Name;');
+    expect(r.completed).toBe(true);
+  });
+
+  it('does not overwrite what this session observed', () => {
+    // Live observation wins; the Journal only fills gaps.
+    const t = atBody([[STRATUM, 'Stratum']]);
+    t.observe(scan('Log'), bodies);
+    t.applyCompleted([done({ species: 'Something Else', colour: 'Puce' })]);
+
+    const r = row(t, STRATUM);
+    expect(r.species).toBe('Stratum Tectonicas');
+    expect(r.colour).toBe('Emerald');
+  });
+
+  it('completes a row even when the entry carries no species', () => {
+    // Entries written before the variant was recorded still prove completion.
+    const t = atBody([[STRATUM, 'Stratum']]);
+    t.applyCompleted([done({ species: null, colour: null, speciesToken: null })]);
+
+    const r = row(t, STRATUM);
+    expect(r.completed).toBe(true);
+    expect(r.species).toBeNull();
+  });
+
+  it('fills the identity even if the row was already marked complete', () => {
+    /*
+     * The exact state in the screenshot: the progress table said "done" but
+     * knew no species, so the row sat at "Fonticulua 3 / 3" with no value.
+     */
+    const t = atBody([[STRATUM, 'Stratum']]);
+    t.applyCompleted([done({ species: null, colour: null, speciesToken: null })]);
+    expect(row(t, STRATUM).species).toBeNull();
+
+    t.applyCompleted([done()]);
+    expect(row(t, STRATUM).species).toBe('Stratum Tectonicas');
+    expect(row(t, STRATUM).colour).toBe('Emerald');
+  });
+});

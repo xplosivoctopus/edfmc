@@ -213,7 +213,7 @@ function LiveExobiologyWidget({ live }: { live: OverlayLiveExobiology }) {
                 ? null
                 : `${row.samplesTaken} / ${row.samplesRequired}`;
 
-          return (
+          return [
             <li key={row.genus} className={`lx-genus lx-${row.status}`}>
               <span className="lx-genus-mark" aria-hidden="true">
                 {row.status === 'complete' ? '✓' : row.status === 'sampling' ? '◆' : '·'}
@@ -227,8 +227,22 @@ function LiveExobiologyWidget({ live }: { live: OverlayLiveExobiology }) {
               <span className="lx-genus-state">
                 {row.status === 'complete' ? stage : (stage ?? 'Unscanned')}
               </span>
-            </li>
-          );
+            </li>,
+            /*
+              Value and walking distance, once the species is known. Both are
+              what a commander weighs mid-run: whether this one is worth
+              finishing, and how far to the next sample.
+
+              Deliberately absent on an unscanned row -- a genus spans species
+              worth 1M to 19M, so a figure there would be a guess.
+            */
+            row.value !== null && (
+              <li key={`${row.genus}-info`} className="lx-genus-info">
+                <span>{row.value} Cr</span>
+                {row.sampleDistance !== null && <span>{row.sampleDistance} m apart</span>}
+              </li>
+            ),
+          ];
         })}
       </ul>
 

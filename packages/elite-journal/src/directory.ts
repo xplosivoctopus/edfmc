@@ -211,7 +211,13 @@ export async function resolveJournalDirectory(
   //
   // Still attempted after a failed known-folder probe: the two paths are
   // different, and one failing does not establish that the other will.
-  const home = process.env['USERPROFILE'] ?? process.env['HOME'];
+  //
+  // `process` is guarded because this also runs in a webview, where it does not
+  // exist. Reading it unguarded threw a ReferenceError exactly here -- in the
+  // branch that only runs when the known-folder probe has already failed -- so
+  // the fallback destroyed the startup it was written to rescue.
+  const env = typeof process === 'undefined' ? undefined : process.env;
+  const home = env?.['USERPROFILE'] ?? env?.['HOME'];
   if (home) {
     const candidate = fs.join(home, 'Saved Games', GAME_SUBPATH);
     const { result, error } = await probe(exists, candidate);

@@ -164,6 +164,16 @@ export interface OverlayExobiologyRow {
   readonly status: 'unscanned' | 'sampling' | 'complete';
   readonly samplesTaken: number | null;
   readonly samplesRequired: number;
+  /**
+   * Base Vista Genomics value, abbreviated, once the species is known.
+   *
+   * Null on an unscanned row and that is not an omission: a surface scan gives a
+   * genus, and a genus spans species worth anywhere from 1M to 19M. Showing a
+   * figure before the species is known would be a guess with a number attached.
+   */
+  readonly value: string | null;
+  /** Minimum metres between accepted samples, once the species is known. */
+  readonly sampleDistance: number | null;
 }
 
 /**

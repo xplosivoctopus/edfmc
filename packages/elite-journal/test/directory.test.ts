@@ -183,3 +183,28 @@ describe('resolveJournalDirectory', () => {
     });
   });
 });
+
+describe('running without a Node process object', () => {
+  it('falls back cleanly in a webview instead of throwing', async () => {
+    /*
+     * `process` does not exist in a Tauri webview. Reading it unguarded threw a
+     * ReferenceError in the branch that only runs when the known-folder probe
+     * has already failed -- so the last-resort fallback destroyed the startup it
+     * was written to rescue, and the app showed an error state instead of
+     * asking for a folder.
+     */
+    const original = (globalThis as { process?: unknown }).process;
+    delete (globalThis as { process?: unknown }).process;
+    try {
+      const result = await resolveJournalDirectory({
+        exists: async () => false,
+        savedGamesPath: undefined,
+      });
+      expect(result.directory).toBeNull();
+      // It reports an absence, not a crash.
+      expect(result.strategy).toBeTruthy();
+    } finally {
+      (globalThis as { process?: unknown }).process = original;
+    }
+  });
+});

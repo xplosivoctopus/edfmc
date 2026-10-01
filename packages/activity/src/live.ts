@@ -180,6 +180,21 @@ export interface LiveExobiology {
  */
 export type LiveActivity = { readonly kind: 'exobiology'; readonly exobiology: LiveExobiology };
 
+/**
+ * A completed specimen, as the Activity Journal recorded it.
+ *
+ * Every field optional-by-null because entries written by older versions carry
+ * less: the genus token and the variant colour were both added after the first
+ * release, so a recovery must work from whatever is there.
+ */
+export interface CompletedRecord {
+  readonly genusToken: string | null;
+  readonly genus: string | null;
+  readonly speciesToken: string | null;
+  readonly species: string | null;
+  readonly colour: string | null;
+}
+
 /** Where the commander is, for the purpose of showing a roster. */
 export interface BodyRef {
   readonly systemAddress: number | null;
@@ -223,6 +238,21 @@ export class LiveActivityTracker {
   /** Genus tokens whose rows changed and have not been persisted yet. */
   private readonly dirty = new Set<string>();
 
+  /**
+   * Genus lists learned for bodies the commander is **not** at.
+   *
+   * The detailed surface scan is normally done from orbit before approaching:
+   * 99 of 122 scans in the corpus had no prior `ApproachBody` for that body. So
+   * the common case is learning a body's genera long before standing on it, and
+   * discarding them until arrival threw away the whole roster.
+   *
+   * Drained by the caller and written to storage, so arriving later is a read.
+   */
+  private readonly pendingRosters = new Map<
+    string,
+    { readonly body: BodyRef; readonly rows: SpeciesProgress[] }
+  >();
+
   constructor(options: { readonly commanderFid: string | null }) {
     this.commanderFid = options.commanderFid;
   }
@@ -253,6 +283,19 @@ export class LiveActivityTracker {
     return req;
   }
 
+  /**
+   * Genus lists for other bodies, for the caller to persist.
+   *
+   * Consumed by reading, so a body is written once per scan rather than on
+   * every journal line until arrival.
+   */
+  takePendingRosters(): ReadonlyArray<{ body: BodyRef; rows: readonly SpeciesProgress[] }> {
+    if (this.pendingRosters.size === 0) return [];
+    const out = [...this.pendingRosters.values()];
+    this.pendingRosters.clear();
+    return out;
+  }
+
   /** Rows changed since the last drain, for the caller to persist. */
   takeDirtyRows(): readonly SpeciesProgress[] {
     if (this.dirty.size === 0) return [];
@@ -264,6 +307,74 @@ export class LiveActivityTracker {
   /** Where those dirty rows belong. */
   get currentBody(): BodyRef | null {
     return this.body;
+  }
+
+  /**
+   * Apply what the Activity Journal records about this body.
+   *
+   * **The Journal is authoritative for completion.** Its `sample-completed`
+   * entries are derived from `Analyse` events, keyed by a deterministic event
+   * id, and survive restarts, reinstalls and a lost progress table. The
+   * progress rows beside them only know what *this* process watched happen, so
+   * when the two disagree about whether something is finished, the Journal
+   * wins.
+   *
+   * It restores the **identity** as well as the flag. The entry carries the
+   * species and variant, so a specimen recovered after a restart reads
+   * "Fonticulua Campestris Teal" with its value, not a bare "Fonticulua" """ + DASH + """
+   * which is all a surface scan would have given.
+   *
+   * Progress rows remain the only source for a **partial** count: three samples
+   * out of three is in history, but two out of three never is, by design.
+   */
+  applyCompleted(records: readonly CompletedRecord[]): boolean {
+    if (records.length === 0 || this.body === null) return false;
+    let changed = false;
+
+    for (const record of records) {
+      // Either key: older Journal entries stored only the localised genus.
+      const i = this.rows.findIndex(
+        (r) =>
+          (record.genusToken !== null && r.genusToken === record.genusToken) ||
+          (record.genus !== null && r.genus === record.genus),
+      );
+      if (i === -1) continue;
+
+      const row = this.rows[i]!;
+      const needsIdentity = row.species === null && record.species !== null;
+      if (row.completed && !needsIdentity) continue;
+
+      this.rows[i] = {
+        ...row,
+        // Kept if already known from this session; the Journal fills the gap
+        // after a restart rather than overwriting live observation.
+        species: row.species ?? record.species,
+        speciesToken: row.speciesToken ?? record.speciesToken,
+        colour: row.colour ?? record.colour,
+        samplesTaken: SAMPLES_REQUIRED,
+        completed: true,
+        updatedAt: row.updatedAt ?? '',
+      };
+      this.dirty.add(row.genusToken);
+      changed = true;
+    }
+
+    if (changed && this.activeGenusToken !== null) {
+      const active = this.rows.find((r) => r.genusToken === this.activeGenusToken);
+      if (active?.completed) this.activeGenusToken = null;
+    }
+    return changed;
+  }
+
+  /**
+   * Put the commander on a body without a journal event saying so.
+   *
+   * Needed at startup: the reader resumes from a byte offset, so a commander
+   * already standing on a planet generates no `ApproachBody` for the app to
+   * see, and the roster stayed empty until they happened to scan something.
+   */
+  enterKnownBody(ref: BodyRef): boolean {
+    return this.enterBody(ref);
   }
 
   /**
@@ -379,6 +490,13 @@ export class LiveActivityTracker {
   }
 
   /** A detailed surface scan: which genera this body carries. */
+  /**
+   * A detailed surface scan: which genera this body carries.
+   *
+   * Recorded for **every** body scanned, not only the one underfoot. Commanders
+   * scan from orbit and then pick which body to land on, so the list almost
+   * always arrives first.
+   */
   private observeSurfaceScan(
     raw: Record<string, unknown>,
     at: string,
@@ -391,35 +509,57 @@ export class LiveActivityTracker {
     if (bodyId === null) return false;
     const systemAddress = num(raw, 'SystemAddress');
 
-    /*
-     * Usually scanned from orbit before arriving -- 99 of 122 DSS events had no
-     * prior ApproachBody for that body -- so this must not force the display to a
-     * body the commander is only looking at. It updates the roster only when it
-     * is the body they are at; otherwise the caller persists it for later.
-     */
+    const fresh = (): SpeciesProgress[] => {
+      const rows: SpeciesProgress[] = [];
+      for (const g of genuses) {
+        const token = str(g, 'Genus');
+        if (token === null) continue;
+        if (rows.some((r) => r.genusToken === token)) continue;
+        if (rows.length >= MAX_GENERA_PER_BODY) break;
+        rows.push({
+          genusToken: token,
+          genus: str(g, 'Genus_Localised') ?? token,
+          // A surface scan reports a genus and nothing finer, so the species
+          // stays unknown until something is collected from it.
+          speciesToken: null,
+          species: null,
+          colour: null,
+          samplesTaken: 0,
+          samplesRequired: SAMPLES_REQUIRED,
+          completed: false,
+          startedAt: null,
+          updatedAt: at,
+        });
+      }
+      return rows;
+    };
+
     const here =
-      this.body !== null && bodyKey(this.body.systemAddress, this.body.bodyId) === bodyKey(systemAddress, bodyId);
-    if (!here) return false;
+      this.body !== null &&
+      bodyKey(this.body.systemAddress, this.body.bodyId) === bodyKey(systemAddress, bodyId);
+
+    if (!here) {
+      // Learned for later. Stored by the caller so arrival is a read.
+      const key = bodyKey(systemAddress, bodyId);
+      this.pendingRosters.set(key, {
+        body: {
+          systemAddress,
+          bodyId,
+          bodyName: str(raw, 'BodyName') ?? bodyNames.get(bodyId) ?? null,
+          systemName: null,
+        },
+        rows: fresh(),
+      });
+      // Nothing on screen changed: the commander is somewhere else.
+      return false;
+    }
 
     let added = false;
-    for (const g of genuses) {
-      const token = str(g, 'Genus');
-      if (token === null) continue;
-      if (this.rows.some((r) => r.genusToken === token)) continue;
+    for (const row of fresh()) {
+      if (this.rows.some((r) => r.genusToken === row.genusToken)) continue;
       if (this.rows.length >= MAX_GENERA_PER_BODY) break;
-      this.rows.push({
-        genusToken: token,
-        genus: str(g, 'Genus_Localised') ?? token,
-        speciesToken: null,
-        species: null,
-        colour: null,
-        samplesTaken: 0,
-        samplesRequired: SAMPLES_REQUIRED,
-        completed: false,
-        startedAt: null,
-        updatedAt: at,
-      });
-      this.dirty.add(token);
+      this.rows.push(row);
+      this.dirty.add(row.genusToken);
       added = true;
     }
 
