@@ -604,6 +604,59 @@ fn migrations() -> Vec<Migration> {
                AND (SELECT COUNT(*) FROM commander_registry) = 1;
         "#,
         kind: MigrationKind::Up,
+    },
+    Migration {
+        version: 13,
+        description: "remember where a half-finished specimen was left",
+        sql: r#"
+            -- Exobiology progress on a body, as CURRENT STATE rather than events.
+            --
+            -- Deliberately not the Activity Journal. That is a historical record
+            -- and stays one entry per completed specimen; this is "where did I
+            -- get to", overwritten as it changes. Writing progress into history
+            -- would turn the Journal into the stage-by-stage list it exists not
+            -- to be.
+            --
+            -- One row per genus per body, because the corpus shows exactly one
+            -- species per genus per body (90 of 90) and one variant per species
+            -- (90 of 90). The surface scan names the genus; the species and
+            -- variant columns stay NULL until the commander samples it, since a
+            -- scan reports a genus and nothing finer.
+            --
+            -- Commander-scoped: two people sharing a machine must not inherit
+            -- each other's progress, and what one has found is also a spoiler for
+            -- the other.
+            CREATE TABLE IF NOT EXISTS exobiology_progress (
+                commander_fid  TEXT    NOT NULL,
+                system_address INTEGER NOT NULL,
+                body_id        INTEGER NOT NULL,
+                genus_token    TEXT    NOT NULL,
+                genus          TEXT    NOT NULL,
+                -- NULL until sampled. A surface scan gives no species.
+                species_token  TEXT,
+                species        TEXT,
+                colour         TEXT,
+                -- 0 = nothing collected. NULL = in progress with the count not
+                -- established, which happens when the reader first sees a run
+                -- midway; a wrong "1 / 3" would say two remain when one does.
+                samples_taken  INTEGER,
+                samples_required INTEGER NOT NULL DEFAULT 3,
+                completed      INTEGER NOT NULL DEFAULT 0,
+                -- Ordering follows the surface scan, so the list does not jump
+                -- around as the commander works.
+                sort_order     INTEGER NOT NULL DEFAULT 0,
+                system_name    TEXT,
+                body_name      TEXT,
+                started_at     TEXT,
+                updated_at     TEXT    NOT NULL,
+                PRIMARY KEY (commander_fid, system_address, body_id, genus_token)
+            );
+
+            -- The roster is always read for one body at a time.
+            CREATE INDEX IF NOT EXISTS idx_exobiology_body
+                ON exobiology_progress (commander_fid, system_address, body_id, sort_order);
+        "#,
+        kind: MigrationKind::Up,
     }]
 }
 

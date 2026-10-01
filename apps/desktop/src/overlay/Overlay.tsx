@@ -190,69 +190,54 @@ function CarrierJumpWidget({ jumps }: { jumps: OverlayCarrierJump[] }) {
 const LIVE_JOURNAL_FRESH_MS = 5 * 60 * 1000;
 
 /**
- * Live exobiology progress.
+ * Exobiology on the body underfoot.
  *
- * This is the reason the widget exists. The Current Context panel already says
- * "biological signals detected" and "landed"; repeating that here earned the
- * space back for nothing. What it could not say is how far through a specimen the
- * commander is, which is the one number they want while walking between plants.
+ * The reason the widget exists. Current Context already says "biological signals
+ * detected" and "landed"; repeating that here earned the space back for nothing.
+ * What it could not say is how far through each organism the commander is, which
+ * is the thing they want while walking between plants -- and, more to the point,
+ * the thing they cannot reconstruct after being called away for an hour.
  *
- * The stage line is **omitted** when the count is not established rather than
- * guessed. See `LiveExobiology.samplesTaken`: a wrong "1 / 3" would say two
- * samples remain when one does.
+ * A stage number is **omitted** rather than guessed when the count is not
+ * established: a wrong "1 / 3" would say two samples remain when one does.
  */
 function LiveExobiologyWidget({ live }: { live: OverlayLiveExobiology }) {
-  const stage = live.completed
-    ? `${live.samplesRequired} / ${live.samplesRequired}`
-    : live.samplesTaken === null
-      ? null
-      : `${live.samplesTaken} / ${live.samplesRequired}`;
-
   return (
     <>
-      <div className="lj-title">{live.species ?? live.genus ?? 'Unknown organism'}</div>
-      {live.colour && <div className="lj-detail">{live.colour}</div>}
+      <ul className="lx-roster">
+        {live.rows.map((row) => {
+          const stage =
+            row.status === 'complete'
+              ? `${row.samplesRequired} / ${row.samplesRequired}`
+              : row.samplesTaken === null || row.samplesTaken === 0
+                ? null
+                : `${row.samplesTaken} / ${row.samplesRequired}`;
 
-      {live.completed ? (
-        <div className="lx-complete">
-          <span className="lx-tick" aria-hidden="true">
-            ✓
-          </span>
-          Sample complete
-          {stage && <span className="lx-stage-small">{stage}</span>}
-        </div>
-      ) : stage ? (
-        <div className="lx-stage">Sample {stage}</div>
-      ) : (
-        /* Honest about the gap: it knows a run is open, not how far in. */
-        <div className="lx-stage lx-stage-unknown">Sampling</div>
-      )}
+          return (
+            <li key={row.genus} className={`lx-genus lx-${row.status}`}>
+              <span className="lx-genus-mark" aria-hidden="true">
+                {row.status === 'complete' ? '✓' : row.status === 'sampling' ? '◆' : '·'}
+              </span>
+              <span className="lx-genus-name">
+                {/* Species once known; the genus alone before that, because a
+                    surface scan reports a genus and nothing finer. */}
+                {row.species ?? row.genus}
+                {row.colour && <span className="lx-colour"> {row.colour}</span>}
+              </span>
+              <span className="lx-genus-state">
+                {row.status === 'complete' ? stage : (stage ?? 'Unscanned')}
+              </span>
+            </li>
+          );
+        })}
+      </ul>
 
-      {/*
-        What else is on this body. The reason it is here: the panel used to go
-        quiet after a specimen was finished, saying nothing about the genus still
-        untouched a few hundred metres away.
-
-        Only shown when the body has actually been surface-scanned, and the
-        sampled genus is left out of the list because it is already the headline.
-      */}
-      {live.genera.length > 1 && (
-        <ul className="lx-roster">
-          {live.genera
-            .filter((g) => g.status !== 'sampling')
-            .map((g) => (
-              <li key={g.genus} className={`lx-genus lx-${g.status}`}>
-                <span className="lx-genus-mark" aria-hidden="true">
-                  {g.status === 'complete' ? '✓' : '·'}
-                </span>
-                <span className="lx-genus-name">{g.genus}</span>
-                <span className="lx-genus-state">
-                  {g.status === 'complete' ? 'Collected' : 'Unscanned'}
-                </span>
-              </li>
-            ))}
-        </ul>
-      )}
+      {/* The answer to "am I done here?", stated rather than left to be counted. */}
+      <div className="lx-summary">
+        {live.unscannedCount === 0 && live.completedCount === live.total
+          ? 'All species recorded here'
+          : `${live.completedCount} of ${live.total} recorded`}
+      </div>
 
       {live.bodyName && <div className="lj-body">{live.bodyName}</div>}
     </>

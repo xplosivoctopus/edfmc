@@ -185,41 +185,31 @@ judged without alt-tabbing into Elite.
 The widget shows one of two things, and which one depends on whether the commander
 is in the middle of something.
 
-**Live activity, when there is any.** Currently exobiology sampling: the organism,
-its variant colour, the sample count and the body.
+**The exobiology roster, at a surface-scanned body.** Every genus the body
+carries, and where the commander got to on each:
 
 ```
 ◆ EXOBIOLOGY
 
-Stratum Tectonicas
-Emerald
+✓ Bacterium Vesicula Gold      3 / 3
+◆ Aleoida Coronamus Turquoise  2 / 3
+· Concha                    Unscanned
 
-Sample 2 / 3
-Nervi 4 a
-```
-
-When the body has been surface-scanned, the panel also lists what else is on it,
-so a genus the commander has not found yet is visible rather than implied:
-
-```
-◆ EXOBIOLOGY
-
-Fonticulua Campestris
-Amethyst
-
-✓ Sample complete   3 / 3
- · Bacterium              Unscanned
+1 of 3 recorded
 Wregoe LS-N b51-0 A 7 g
 ```
 
-The genus being sampled is left out of that list — it is already the headline.
-A body with no surface scan shows no list at all, because without a scan there is
-no list, and an empty one is not a claim that nothing else is there.
+When everything is collected the summary says so outright — *All species recorded
+here* — which is the other question worth answering on arrival.
 
-**Unfinished business keeps the panel up.** Once a specimen is done, the useful
-thing on screen is no longer the completion but the genus still untouched a few
-hundred metres away, so the five-minute collapse is suspended while anything on
-this body is unscanned. When everything is collected, it ages out as before.
+An unsampled row shows the **genus only**. A surface scan reports a genus and
+nothing finer, so "Concha" is what the game said and "Concha Renibus" would be a
+guess. The species and variant appear as soon as the first sample is taken.
+
+**This is persisted.** Leaving the planet, leaving the system or closing the app
+does not lose it: progress is stored per commander, per body, per genus, and
+reloaded on arrival. A commander pulled away mid-run by their squadron comes back
+and sees exactly where they stopped.
 
 **The newest recorded entry, otherwise.** Titled *Field Journal*, with the same
 lifecycle as before:
@@ -232,31 +222,42 @@ It does not disappear, because an empty panel that used to have content reads as
 bug; and it does not keep asserting something from half an hour ago, which is the
 stale-context problem this project has fixed once already.
 
-#### Why live progress takes precedence
+#### Why the roster takes precedence
 
 Before this, the widget only ever showed the newest *completed* entry — which
 during an exobiology run meant "biological signals detected" or "landed". Current
 Context already says both, so the panel was spending screen space over a game to
 repeat its neighbour.
 
-The sample counter is the thing nothing else on screen can say. So when a run is
-open it wins, and the title follows the content: a panel headed *Field Journal*
-showing a sample counter describes itself wrongly.
+Where the commander got to on each organism is the thing nothing else on screen
+can say, and the thing they cannot reconstruct after being away. So when they are
+at a scanned body it wins, and the title follows the content: a panel headed
+*Field Journal* showing a sample counter describes itself wrongly.
 
 The precedence is a function — `liveJournalPanel` in `src/lib/overlay.ts` — rather
-than a condition inside the markup, so the decision the widget's usefulness depends
-on is asserted by tests directly.
+than a condition inside the markup, so the decision the widget's usefulness
+depends on is asserted by tests directly. An empty roster falls through to the
+recorded entry, as does an activity `kind` an older overlay does not recognise.
+
+#### The roster does not go stale
+
+Staleness is the wrong model for it. It describes the body the commander is
+standing on rather than an event that happened, so it is current for as long as
+they are there and disappears when they leave — on `SupercruiseEntry` (which ends
+a visit far more often than `LeaveBody`), on `LeaveBody`, or on a jump.
+
+The five-minute collapse still applies to the recorded-entry panel.
 
 #### What it will not claim
 
 When the app is started midway through a run, the stage count cannot be
 established: the reader resumes from a byte offset rather than replaying history,
-so the first event seen may be the second or the third sample. The widget then
-shows `Sampling` with the organism and **no number**, because a wrong `1 / 3` would
-say two samples remain when one does.
+so the first event seen may be the second or the third sample. The row then shows
+no number at all, because a wrong `1 / 3` would say two samples remain when one
+does. `Analyse` recovers a definite count, being itself proof of three.
 
-`docs/ACTIVITY-JOURNAL.md` has the measurements behind the sequence and the reset
-rules, including the one that rests on a single observation.
+`docs/ACTIVITY-JOURNAL.md` has the measurements behind the sequence, the roster
+and the reset rules.
 
 ### Carrier jump: when a countdown ends
 

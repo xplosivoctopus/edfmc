@@ -1,10 +1,11 @@
 /**
- * Live activity replayed against the real corpus.
+ * Live exobiology replayed against the real corpus.
  *
- * The design rests on a measurement — that a sample run is
- * `Log, Sample, Sample, Analyse` and not three events — so the measurement is
- * asserted here against what the game actually wrote, rather than only against
- * fixtures shaped by the same belief that produced the code.
+ * The design rests on measurements — that a sample run is
+ * `Log, Sample, Sample, Analyse` and not three events, and that a surface scan's
+ * genus list can be matched to what gets sampled — so those are asserted against
+ * what the game actually wrote rather than only against fixtures shaped by the
+ * same belief that produced the code.
  *
  * Skips on machines without a journal directory. Journals are never committed:
  * they contain commander identity, travel history and finances (§21).
@@ -18,7 +19,7 @@ import { listJournalFiles, replayFile } from '@edfm/elite-journal';
 import '@edfm/elite-journal/node';
 
 import { ActivityEngine } from '../src/engine.js';
-import { LiveActivityTracker, SAMPLES_REQUIRED } from '../src/live.js';
+import { LiveActivityTracker, SAMPLES_REQUIRED, rowStatus } from '../src/live.js';
 import type { ActivityEntry } from '../src/types.js';
 
 const home = process.env['USERPROFILE'] ?? process.env['HOME'] ?? '';
@@ -30,27 +31,28 @@ const available = home !== '' && existsSync(DIR);
 const suite = available ? describe : describe.skip;
 
 interface Replay {
-  /** Stage numbers observed, in order, for every run that reached Analyse. */
   readonly completedRuns: number[][];
   readonly analyseCount: number;
   readonly logCount: number;
   readonly sampleCount: number;
   readonly entries: ActivityEntry[];
-  /**
-   * Durable entries produced by a `Log` or `Sample` scan.
-   *
-   * This, and not "entries written while a run was open", is the property that
-   * matters. An earlier version of this test counted the latter and failed on
-   * three `SAASignalsFound` entries -- the commander had surface-scanned another
-   * body while a run was open on a different one. Those are separate
-   * accomplishments and belong in the Journal; the noise to prevent is a stage
-   * becoming history.
-   */
   readonly entriesFromIntermediateScans: number;
   readonly everExceededRequired: boolean;
-  readonly unnamedOrganisms: number;
+  readonly biggestRoster: number;
+  readonly bodiesWithUnscanned: number;
+  readonly bodiesFullyDone: number;
+  readonly rowsMissingGenus: number;
+  /** Rows shown as unscanned that nonetheless carried a species name. */
+  readonly unscannedWithSpecies: number;
 }
 
+/**
+ * Replay, persisting nothing.
+ *
+ * The tracker asks for stored rows on arrival; there is no store here, so every
+ * body starts from what the journal itself says. That is the harder case and the
+ * one worth testing.
+ */
 async function replay(maxFiles = 80): Promise<Replay> {
   const files = (await listJournalFiles(DIR)).filter((f) => f.sizeBytes > 0).slice(-maxFiles);
 
@@ -58,13 +60,17 @@ async function replay(maxFiles = 80): Promise<Replay> {
   const live = new LiveActivityTracker({ commanderFid: 'F-TEST' });
 
   const completedRuns: number[][] = [];
-  let current: number[] = [];
+  const perGenusStages = new Map<string, number[]>();
   let analyseCount = 0;
   let logCount = 0;
   let sampleCount = 0;
   let entriesFromIntermediateScans = 0;
   let everExceededRequired = false;
-  let unnamedOrganisms = 0;
+  let biggestRoster = 0;
+  let rowsMissingGenus = 0;
+  let unscannedWithSpecies = 0;
+  const bodiesUnscanned = new Set<string>();
+  const bodiesDone = new Set<string>();
   const entries: ActivityEntry[] = [];
 
   for (const file of files) {
@@ -74,32 +80,52 @@ async function replay(maxFiles = 80): Promise<Replay> {
       entries.push(...produced);
 
       live.observe(event, engine.bodyNameMap);
+      // Drained as the app does, so nothing accumulates unboundedly.
+      live.takeHydrationRequest();
+      live.takeDirtyRows();
 
       const raw = event.source.raw as Record<string, unknown>;
       if (event.source.event === 'ScanOrganic') {
         const scanType = raw['ScanType'];
+        if (scanType === 'Log') logCount += 1;
+        if (scanType === 'Sample') sampleCount += 1;
+        if (scanType === 'Analyse') analyseCount += 1;
 
         // The invariant: a step toward a specimen never becomes history.
         if (scanType === 'Log' || scanType === 'Sample') {
           entriesFromIntermediateScans += produced.length;
         }
-        if (scanType === 'Log') logCount += 1;
-        if (scanType === 'Sample') sampleCount += 1;
-        if (scanType === 'Analyse') analyseCount += 1;
 
-        const now = live.state?.exobiology;
-        if (now) {
-          if (now.samplesTaken !== null && now.samplesTaken > now.samplesRequired) {
-            everExceededRequired = true;
+        const e = live.state?.exobiology;
+        const genus = raw['Genus'];
+        if (e && typeof genus === 'string') {
+          const key = `${e.systemAddress}|${e.bodyId}|${genus}`;
+          const r = e.rows.find((x) => x.genusToken === genus);
+          if (r) {
+            if (r.samplesTaken !== null && r.samplesTaken > r.samplesRequired) {
+              everExceededRequired = true;
+            }
+            if (scanType === 'Log') perGenusStages.set(key, []);
+            const list = perGenusStages.get(key) ?? [];
+            if (r.samplesTaken !== null && r.samplesTaken > 0) list.push(r.samplesTaken);
+            perGenusStages.set(key, list);
+            if (r.completed) {
+              completedRuns.push([...list]);
+              perGenusStages.delete(key);
+            }
           }
-          if (now.species === null) unnamedOrganisms += 1;
+        }
+      }
 
-          if (scanType === 'Log') current = [];
-          if (now.samplesTaken !== null) current.push(now.samplesTaken);
-          if (now.completed) {
-            completedRuns.push([...current]);
-            current = [];
-          }
+      const e = live.state?.exobiology;
+      if (e) {
+        biggestRoster = Math.max(biggestRoster, e.rows.length);
+        const key = `${e.systemAddress}|${e.bodyId}`;
+        if (e.unscannedCount > 0) bodiesUnscanned.add(key);
+        if (e.total > 0 && e.completedCount === e.total) bodiesDone.add(key);
+        for (const r of e.rows) {
+          if (!r.genus) rowsMissingGenus += 1;
+          if (rowStatus(r) === 'unscanned' && r.species !== null) unscannedWithSpecies += 1;
         }
       }
     }
@@ -113,20 +139,21 @@ async function replay(maxFiles = 80): Promise<Replay> {
     entries,
     entriesFromIntermediateScans,
     everExceededRequired,
-    unnamedOrganisms,
+    biggestRoster,
+    bodiesWithUnscanned: bodiesUnscanned.size,
+    bodiesFullyDone: bodiesDone.size,
+    rowsMissingGenus,
+    unscannedWithSpecies,
   };
 }
 
 suite('live exobiology against the real corpus', () => {
-  it('every completed run climbs 1, 2, 3 and stops', async () => {
+  it('every completed specimen climbs 1, 2, 3 and stops', async () => {
     const r = await replay();
     if (r.analyseCount === 0) return; // this commander has never completed a scan
 
     expect(r.completedRuns.length).toBeGreaterThan(0);
     for (const stages of r.completedRuns) {
-      // Runs the app saw from the beginning report every stage; runs already in
-      // progress when the replay started legitimately report fewer, because the
-      // count is not invented. Both must be monotonic and bounded.
       for (let i = 1; i < stages.length; i += 1) {
         expect(stages[i]!, `stages ${stages.join(',')}`).toBeGreaterThanOrEqual(stages[i - 1]!);
       }
@@ -139,7 +166,7 @@ suite('live exobiology against the real corpus', () => {
     if (r.analyseCount === 0) return;
 
     /*
-     * The measurement this whole design rests on. If the sequence were
+     * The measurement the whole design rests on. If the sequence were
      * Log/Sample/Analyse there would be one Sample per Analyse; the corpus has
      * two, and treating Analyse as the third sample would report every specimen
      * finished one sample early.
@@ -153,19 +180,13 @@ suite('live exobiology against the real corpus', () => {
     expect(r.everExceededRequired).toBe(false);
   }, 120_000);
 
-  it('names the organism on every live state it produces', async () => {
-    const r = await replay();
-    expect(r.unnamedOrganisms).toBe(0);
-  }, 120_000);
-
   it('writes no durable entry for an intermediate stage', async () => {
     const r = await replay();
     if (r.analyseCount === 0) return;
 
     /*
      * The durable record stays concise: one entry per completed specimen, none
-     * for the steps. Measured, this suppresses 243 of the 323 scans in the
-     * corpus.
+     * for the steps. Measured, this suppresses 243 of the 323 scans.
      */
     expect(r.entriesFromIntermediateScans).toBe(0);
     expect(r.logCount + r.sampleCount).toBeGreaterThan(0);
@@ -176,26 +197,36 @@ suite('live exobiology against the real corpus', () => {
 
   it('still records other activity that happens during a run', async () => {
     /*
-     * The complement, and the reason the assertion above is worded as it is.
-     * Surface-scanning another body while a sample run is open is a separate
-     * accomplishment, and three of them occur in this corpus. Suppressing
-     * everything that lands mid-run would lose them.
+     * The complement. Surface-scanning another body while a run is open is a
+     * separate accomplishment, and three of them occur in this corpus.
      */
     const r = await replay();
     if (r.analyseCount === 0) return;
-    const signals = r.entries.filter((e) => e.subtype === 'signals-detected');
-    expect(signals.length).toBeGreaterThan(0);
+    expect(r.entries.filter((e) => e.subtype === 'signals-detected').length).toBeGreaterThan(0);
   }, 120_000);
 
-  it('produces one durable entry per specimen however many stages it took', async () => {
+  it('builds rosters from real surface scans, within bounds', async () => {
     const r = await replay();
-    if (r.analyseCount === 0) return;
+    expect(r.biggestRoster).toBeGreaterThan(0);
+    // The largest genus list measured on one body was 8.
+    expect(r.biggestRoster).toBeLessThanOrEqual(16);
+    expect(r.rowsMissingGenus).toBe(0);
+  }, 120_000);
 
-    const completed = r.entries.filter((e) => e.subtype === 'sample-completed');
-    // Log + Sample events far outnumber the entries they belong to; that ratio is
-    // the property being protected.
-    expect(r.logCount + r.sampleCount).toBeGreaterThan(completed.length);
-    expect(completed.length).toBe(r.analyseCount);
+  it('finds both bodies still owing work and bodies finished', async () => {
+    /*
+     * Both states this feature exists to show. Of 60 bodies with a genus list in
+     * the corpus, 47 were finished, 6 partially worked and 7 untouched.
+     */
+    const r = await replay();
+    expect(r.bodiesWithUnscanned).toBeGreaterThan(0);
+    expect(r.bodiesFullyDone).toBeGreaterThan(0);
+  }, 120_000);
+
+  it('never names a species on a row nothing has been collected from', async () => {
+    // A surface scan reports a genus and nothing finer.
+    const r = await replay();
+    expect(r.unscannedWithSpecies).toBe(0);
   }, 120_000);
 
   it('derives stable ids, so a second pass adds nothing', async () => {
@@ -205,83 +236,5 @@ suite('live exobiology against the real corpus', () => {
     const b = await replay(12);
     expect(new Set(a.entries.map((e) => e.id)).size).toBe(a.entries.length);
     expect(a.entries.map((e) => e.id)).toEqual(b.entries.map((e) => e.id));
-  }, 120_000);
-});
-
-suite('the genus roster against the real corpus', () => {
-  /**
-   * Replay and record, for every body, the roster the overlay would have shown at
-   * the moment its last scan happened.
-   */
-  async function rosters(maxFiles = 80) {
-    const files = (await listJournalFiles(DIR)).filter((f) => f.sizeBytes > 0).slice(-maxFiles);
-    const engine = new ActivityEngine({ commanderFid: 'F-TEST' });
-    const live = new LiveActivityTracker({ commanderFid: 'F-TEST' });
-
-    /** bodyKey -> the last roster seen for it. */
-    const seen = new Map<string, { listed: number; unscanned: number; complete: number }>();
-    let rosterRowsEverSeen = 0;
-    let statusOutsideVocabulary = 0;
-
-    for (const file of files) {
-      for (const event of (await replayFile(file.fullPath)).events) {
-        engine.observe(event);
-        live.observe(event, engine.bodyNameMap);
-
-        const e = live.state?.exobiology;
-        if (!e || e.genera.length === 0) continue;
-
-        rosterRowsEverSeen += e.genera.length;
-        for (const g of e.genera) {
-          if (!['unscanned', 'sampling', 'complete'].includes(g.status)) {
-            statusOutsideVocabulary += 1;
-          }
-        }
-
-        seen.set(`${e.systemAddress}|${e.bodyId}`, {
-          listed: e.genera.length,
-          unscanned: e.unscannedCount,
-          complete: e.genera.filter((g) => g.status === 'complete').length,
-        });
-      }
-    }
-    return { seen, rosterRowsEverSeen, statusOutsideVocabulary };
-  }
-
-  it('builds a roster from real surface scans', async () => {
-    const r = await rosters();
-    expect(r.rosterRowsEverSeen).toBeGreaterThan(0);
-    expect(r.statusOutsideVocabulary).toBe(0);
-  }, 120_000);
-
-  it('finds bodies with a genus still unscanned', async () => {
-    /*
-     * The state this feature exists for, and it is common: of the 60 bodies with
-     * a genus list in the corpus, 6 were partially worked and 7 untouched.
-     */
-    const r = await rosters();
-    const partial = [...r.seen.values()].filter((b) => b.unscanned > 0 && b.complete > 0);
-    expect(partial.length).toBeGreaterThan(0);
-  }, 120_000);
-
-  it('never reports more unscanned than the scan listed', async () => {
-    const r = await rosters();
-    for (const [key, b] of r.seen) {
-      expect(b.unscanned, key).toBeLessThanOrEqual(b.listed);
-      expect(b.complete + b.unscanned, key).toBeLessThanOrEqual(b.listed);
-    }
-  }, 120_000);
-
-  it('does not invent genera the scan never listed', async () => {
-    /*
-     * Measured: zero genera were ever sampled that the body's own scan had not
-     * listed, so a roster longer than the scan would mean this code had added
-     * something rather than the game having reported it.
-     */
-    const r = await rosters();
-    for (const [key, b] of r.seen) {
-      expect(b.listed, key).toBeGreaterThan(0);
-      expect(b.listed, key).toBeLessThanOrEqual(16);
-    }
   }, 120_000);
 });

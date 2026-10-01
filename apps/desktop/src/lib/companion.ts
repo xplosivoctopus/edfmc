@@ -92,6 +92,9 @@ import { credentialPresent } from './credentials.js';
 import {
   ActivityEngine,
   LiveActivityTracker,
+  rowStatus,
+  type BodyRef,
+  type SpeciesProgress,
   groupActivity,
   type ActivityEntry,
   type ActivityGroup,
@@ -1329,8 +1332,16 @@ export class Companion {
     let liveChanged = this.liveActivity.observe(event, this.activity.bodyNameMap);
     // A body may be named by a later event than the scan that referenced it.
     if (this.liveActivity.resolveBodyName(this.activity.bodyNameMap)) liveChanged = true;
+
+    // Arriving somewhere asks for that body's stored rows; changes ask to be
+    // written back. Both are async and neither gates ingest.
+    const hydrate = this.liveActivity.takeHydrationRequest();
+    if (hydrate !== null) void this.hydrateBodyRoster(hydrate);
+
+    const dirty = this.liveActivity.takeDirtyRows();
+    if (dirty.length > 0) void this.saveExobiologyRows(this.liveActivity.currentBody, dirty);
+
     if (liveChanged) {
-      this.seedRosterFromHistory();
       this.liveActivity.setSystem(
         isKnown(this.state.starSystem) ? this.state.starSystem : null,
         isKnown(this.state.systemAddress) ? this.state.systemAddress : null,
@@ -2008,34 +2019,118 @@ export class Companion {
   /* -------------------------------------------------- activity journal */
 
   /**
-   * Tell live activity which genera this body has already given up.
+   * Load a body's stored exobiology rows when the commander arrives.
    *
-   * The journal reader resumes from a byte offset rather than replaying, so a
-   * specimen collected in an earlier session is invisible to the tracker. Without
-   * this the roster would call it "unscanned" """ + DASH + """ a confident wrong answer, and the
-   * one failure mode that would make the whole panel untrustworthy.
-   *
-   * Read from entries already in memory, so this costs no query.
+   * This is what makes a half-finished specimen survive leaving the planet, the
+   * system, or the app. Progress is kept as current state rather than as events,
+   * so coming back is a read rather than a replay.
    */
-  private seedRosterFromHistory(): void {
-    const live = this.liveActivity.state;
-    if (live === null) return;
-    const { bodyId, systemAddress } = live.exobiology;
-    if (bodyId === null) return;
+  private async hydrateBodyRoster(ref: BodyRef): Promise<void> {
+    if (!this.db || this.discoveryFid === null) return;
+    try {
+      const rows = await this.db.select<
+        Array<{
+          genus_token: string;
+          genus: string;
+          species_token: string | null;
+          species: string | null;
+          colour: string | null;
+          samples_taken: number | null;
+          samples_required: number;
+          completed: number;
+          started_at: string | null;
+          updated_at: string;
+        }>
+      >(
+        `SELECT genus_token, genus, species_token, species, colour,
+                samples_taken, samples_required, completed, started_at, updated_at
+           FROM exobiology_progress
+          WHERE commander_fid = $1 AND system_address = $2 AND body_id = $3
+          ORDER BY sort_order, genus`,
+        [this.discoveryFid, ref.systemAddress ?? 0, ref.bodyId],
+      );
 
-    const done: string[] = [];
-    for (const entry of this.activityEntries) {
-      if (entry.subtype !== 'sample-completed') continue;
-      if (entry.bodyId !== bodyId) continue;
-      if (entry.systemAddress !== null && entry.systemAddress !== systemAddress) continue;
-      // Either key: older entries stored only the localised name.
-      const token = entry.data['genusToken'];
-      const genus = entry.data['genus'];
-      if (typeof token === 'string') done.push(token);
-      else if (typeof genus === 'string') done.push(genus);
+      this.liveActivity.hydrate(
+        ref,
+        rows.map((r) => ({
+          genusToken: r.genus_token,
+          genus: r.genus,
+          speciesToken: r.species_token,
+          species: r.species,
+          colour: r.colour,
+          samplesTaken: r.samples_taken,
+          samplesRequired: r.samples_required,
+          completed: r.completed === 1,
+          startedAt: r.started_at,
+          updatedAt: r.updated_at,
+        })),
+      );
+      this.notify();
+      if (this.overlayEnabled) this.pushOverlayState();
+    } catch (err) {
+      // A failed read leaves the roster as whatever this session has observed,
+      // which is incomplete rather than wrong.
+      logger.warn('activity', 'Could not read exobiology progress', { error: String(err) });
     }
+  }
 
-    if (done.length > 0) this.liveActivity.seedCompleted(systemAddress, bodyId, done);
+  /**
+   * Write changed rows back.
+   *
+   * Upsert on the natural key rather than append: this table is state, not a
+   * log, so a body with four genera has four rows however many samples were
+   * taken. `sort_order` preserves the order the surface scan reported.
+   */
+  private async saveExobiologyRows(
+    ref: BodyRef | null,
+    rows: readonly SpeciesProgress[],
+  ): Promise<void> {
+    if (!this.db || this.discoveryFid === null || ref === null || rows.length === 0) return;
+    const now = new Date().toISOString();
+
+    try {
+      for (const row of rows) {
+        await this.db.execute(
+          `INSERT INTO exobiology_progress
+             (commander_fid, system_address, body_id, genus_token, genus,
+              species_token, species, colour, samples_taken, samples_required,
+              completed, sort_order, system_name, body_name, started_at, updated_at)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
+           ON CONFLICT (commander_fid, system_address, body_id, genus_token)
+           DO UPDATE SET
+             genus = excluded.genus,
+             species_token = excluded.species_token,
+             species = excluded.species,
+             colour = excluded.colour,
+             samples_taken = excluded.samples_taken,
+             completed = excluded.completed,
+             system_name = COALESCE(excluded.system_name, exobiology_progress.system_name),
+             body_name = COALESCE(excluded.body_name, exobiology_progress.body_name),
+             started_at = COALESCE(exobiology_progress.started_at, excluded.started_at),
+             updated_at = excluded.updated_at`,
+          [
+            this.discoveryFid,
+            ref.systemAddress ?? 0,
+            ref.bodyId,
+            row.genusToken,
+            row.genus,
+            row.speciesToken,
+            row.species,
+            row.colour,
+            row.samplesTaken,
+            row.samplesRequired,
+            row.completed ? 1 : 0,
+            rows.indexOf(row),
+            ref.systemName,
+            ref.bodyName,
+            row.startedAt,
+            row.updatedAt || now,
+          ],
+        );
+      }
+    } catch (err) {
+      logger.warn('activity', 'Could not save exobiology progress', { error: String(err) });
+    }
   }
 
   /**
@@ -2051,19 +2146,18 @@ export class Companion {
     const e = live.exobiology;
     return {
       kind: 'exobiology',
-      genus: e.genus,
-      species: e.species,
-      colour: e.colour,
       bodyName: e.bodyName,
-      samplesTaken: e.samplesTaken,
-      samplesRequired: e.samplesRequired,
-      completed: e.completed,
-      genera: e.genera.map((g) => ({
-        genus: g.genus,
-        status: g.status,
-        samplesTaken: g.samplesTaken,
+      rows: e.rows.map((r) => ({
+        genus: r.genus,
+        species: r.species,
+        colour: r.colour,
+        status: rowStatus(r),
+        samplesTaken: r.samplesTaken,
+        samplesRequired: r.samplesRequired,
       })),
+      completedCount: e.completedCount,
       unscannedCount: e.unscannedCount,
+      total: e.total,
       updatedAt: e.updatedAt,
     };
   }

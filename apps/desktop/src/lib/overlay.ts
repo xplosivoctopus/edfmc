@@ -155,33 +155,32 @@ export interface LiveJournalState {
  * wrong and no reason to reach for anything else.
  */
 /** One genus on the body, as the widget draws it. */
-export interface OverlayGenusProgress {
+export interface OverlayExobiologyRow {
+  /** Always known, from the surface scan. */
   readonly genus: string;
+  /** Known only once sampling starts; a scan reports no species. */
+  readonly species: string | null;
+  readonly colour: string | null;
   readonly status: 'unscanned' | 'sampling' | 'complete';
   readonly samplesTaken: number | null;
+  readonly samplesRequired: number;
 }
 
+/**
+ * Exobiology on the body the commander is at.
+ *
+ * The whole roster, not just the specimen in hand: a commander called away
+ * mid-run should return and see exactly where they stopped, and one who has
+ * finished should see that nothing is left.
+ */
 export interface OverlayLiveExobiology {
   readonly kind: 'exobiology';
-  readonly genus: string | null;
-  readonly species: string | null;
-  /** Variant colour, e.g. `Emerald`. */
-  readonly colour: string | null;
   readonly bodyName: string | null;
-  /**
-   * Null when the count could not be established -- the app started midway
-   * through a run. The widget omits the stage line rather than inventing one.
-   */
-  readonly samplesTaken: number | null;
-  readonly samplesRequired: number;
-  readonly completed: boolean;
-  /**
-   * Every genus the body's surface scan reported. Empty when it has not been
-   * scanned, which is not a claim that nothing is there.
-   */
-  readonly genera: readonly OverlayGenusProgress[];
+  readonly rows: readonly OverlayExobiologyRow[];
+  readonly completedCount: number;
   readonly unscannedCount: number;
-  /** ISO 8601. The overlay decides for itself when this has gone stale. */
+  readonly total: number;
+  /** ISO 8601 of the most recent change. */
   readonly updatedAt: string;
 }
 
@@ -216,51 +215,33 @@ export type LiveJournalPanel<J> =
   | null;
 
 /**
- * How long a *completed* specimen stays on screen.
+ * How long a completed run stays on screen when nothing else is pending.
  *
- * The same window the recorded-entry lifecycle uses, for the same reason: a panel
- * still announcing a sample finished half an hour ago is the stale-context problem
- * this project has already fixed once.
- *
- * **Only completions age out.** A run in progress never expires, because the
- * longest measured gap between two stages of one organism was about fourteen hours
- * — a commander who lands, samples, flies to the next plant and comes back is
- * mid-run the whole time, and timing them out would be wrong on real data. See
- * docs/ACTIVITY-JOURNAL.md.
+ * Kept for the recorded-entry panel. The exobiology roster no longer uses it:
+ * it describes the body the commander is standing on rather than an event that
+ * happened, so it is current for as long as they are there and disappears when
+ * they leave. Staleness was the wrong model for it.
  */
 export const LIVE_COMPLETION_VISIBLE_MS = 5 * 60 * 1000;
 
 export function liveJournalPanel<J>(input: {
   readonly liveActivity: OverlayLiveActivity | null;
   readonly liveJournal: J | null;
-  /** Defaults to now; passed explicitly so the lifecycle is testable. */
+  /** Unused by the exobiology roster; kept for the entry lifecycle. */
   readonly now?: number;
 }): LiveJournalPanel<J> {
   const live = input.liveActivity;
-  // Switched on `kind` so an unrecognised activity from a newer build falls
-  // through to the entry rather than rendering an empty panel.
-  if (live !== null && live.kind === 'exobiology' && !staleCompletion(live, input.now)) {
+  /*
+   * Switched on `kind` so an unrecognised activity from a newer build falls
+   * through to the entry rather than rendering an empty panel. An empty roster
+   * also falls through: with no surface scan there is nothing to list, and a
+   * blank panel would be worse than the recorded entry.
+   */
+  if (live !== null && live.kind === 'exobiology' && live.rows.length > 0) {
     return { kind: 'exobiology', live };
   }
   if (input.liveJournal !== null) return { kind: 'entry', journal: input.liveJournal };
   return null;
-}
-
-function staleCompletion(live: OverlayLiveExobiology, now = Date.now()): boolean {
-  if (!live.completed) return false;
-  /*
-   * Unfinished business keeps the panel up. Once a specimen is done, the useful
-   * thing on screen is no longer the completion — it is that another genus on
-   * this body still has nothing collected from it. Hiding that after five
-   * minutes would throw away the answer to "what else is down here?" while the
-   * commander is still standing on it.
-   */
-  if (live.unscannedCount > 0) return false;
-  const at = Date.parse(live.updatedAt);
-  // An unparseable timestamp is not evidence of staleness; keep showing it rather
-  // than hiding a completion because its clock string was odd.
-  if (!Number.isFinite(at)) return false;
-  return now - at >= LIVE_COMPLETION_VISIBLE_MS;
 }
 
 /**

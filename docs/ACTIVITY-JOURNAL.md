@@ -17,7 +17,7 @@ normal operation.
 | | Activity Journal | Live activity state |
 |---|---|---|
 | **What it is** | A historical record | Current operational progress |
-| **Lifetime** | Durable, stored in SQLite | Transient, in memory only |
+| **Lifetime** | Durable, stored in SQLite | Durable, stored separately as *state* |
 | **Granularity** | One entry per thing accomplished | Every step, while it is happening |
 | **Answers** | "What did I do?" | "What am I in the middle of?" |
 | **Lives in** | `packages/activity/src/exobiology.ts` | `packages/activity/src/live.ts` |
@@ -27,9 +27,16 @@ Journal into a stage-by-stage event list, which is what it exists not to be; and
 having only history meant the overlay could show nothing but the last completed
 thing, which largely restated Current Context.
 
-**Live state is never persisted and never becomes an entry.** It is rebuilt from
-live events, because storing "in progress" would keep asserting it after the
-session it described had ended.
+**Live state never becomes an entry.** It is persisted, but as *current state*
+rather than as events: one row per genus per body in `exobiology_progress`,
+overwritten as it changes. A body with four genera has four rows however many
+samples were taken.
+
+That distinction is the whole point. Leaving the planet, leaving the system or
+closing the app must not lose a half-finished specimen — a commander called
+away mid-run should come back and see exactly where they stopped instead of
+guessing — but writing each sample into the Journal would turn history into the
+stage-by-stage list it exists not to be.
 
 ---
 
@@ -111,10 +118,22 @@ Time is not a signal either: the longest gap between two stages of one organism 
 |---|---|---|
 | `ScanOrganic` for a different system/body/species | Replaces the run | The 3 abandoned runs were each followed by a different species' `Log` |
 | `Analyse` | Completes it | 80 of 80 |
-| `FSDJump` / `CarrierJump` / `Location` to a different system | Abandons it | `FSDJump` never occurs mid-run |
+| Leaving the body or system | **Stops displaying it; nothing is lost** | Progress is stored, so returning restores it |
 | `SellOrganicData` | Retires a *completed* specimen | The data has left the ship |
 | Commander change | Clears it | Architectural: progress belongs to whoever took it |
-| `Died` | Abandons an *unfinished* run | **One observation. See below.** |
+| Starting a different genus | Returns the previous *partial* row to unscanned | 80 of 80 completed runs were contiguous |
+| Commander change | Clears the display | Progress is stored per commander |
+
+### One specimen at a time
+
+Starting a different genus returns the previous *partial* row to unscanned.
+
+The evidence: of the 80 completed runs, **every one was contiguous** — no run
+ever resumed after another species intervened — and the only 3 interrupted runs
+never completed. If partial progress survived switching organisms, at least one
+resumed run would be expected among 80.
+
+Completed specimens are never reset. `Analyse` banked them.
 
 ### The genus roster: what is still down there
 
@@ -142,19 +161,22 @@ and does not guess which bacterium.
 
 **A body with no surface scan has an empty roster**, and that is not a claim that
 nothing is there. It is the difference between "the scan listed these" and "we
-have not looked".
+have not looked". The widget shows nothing at all in that case rather than an
+empty panel.
+
+One species per genus per body (90 of 90) and one variant per species (90 of 90),
+so a row is keyed by genus and its species and variant columns stay null until
+sampled.
 
 ### What the journal does not establish
 
-**Death.** There are 18 `Died` events in the corpus and exactly one falls near a
-sample run — a `Log` five minutes earlier, with no further scan of that organism
-afterwards. That is *consistent* with death abandoning the run, and it is one data
-point, so it is not proof.
-
-Clearing is the conservative direction: the failure mode is a widget that stops
-showing progress the commander could have resumed, which they will notice and can
-re-establish with their next sample. The opposite error asserts progress that no
-longer exists.
+**Whether leaving discards progress.** An earlier version cleared a run on
+`FSDJump`, which was a guess: `FSDJump` never appears between the stages of a run
+in the corpus, so there was no evidence either way about what the game does.
+Persisting is the behaviour that loses nothing regardless of the answer, so the
+display simply follows the body the commander is at and the stored rows outlive
+it. `Died` is likewise no longer treated as a reset — 18 deaths, exactly one near
+a run, is not enough to discard a commander's work on.
 
 **Which genera an earlier session already collected.** The tracker only sees this
 session's events, so a specimen collected last week would be reported "unscanned"
@@ -288,8 +310,8 @@ Never titles — those carry system names, body names and organism discoveries.
 The Journal screen is the history. The overlay widget answers a different
 question, and which one depends on what is happening:
 
-- **While sampling** — live progress: organism, variant colour, `1 / 3`, the body,
-  and what else the body's surface scan listed. Titled **Exobiology**.
+- **At a surface-scanned body** — every genus it carries, with where the commander
+  got to on each: `3 / 3`, `2 / 3`, or `Unscanned`. Titled **Exobiology**.
 - **Otherwise** — the newest recorded entry plus how many were recorded at the same
   body. Titled **Field Journal**, and it collapses to a count after five minutes.
 

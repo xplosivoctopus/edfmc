@@ -103,7 +103,7 @@ function owners(db: DatabaseSync, table: string): Array<string | null> {
 describe('migration extraction', () => {
   it('finds the real migrations in the Rust source', () => {
     const all = migrations();
-    expect(all.length).toBeGreaterThanOrEqual(12);
+    expect(all.length).toBeGreaterThanOrEqual(13);
     expect(all.map((m) => m.version)).toEqual([...all.map((m) => m.version)].sort((a, b) => a - b));
     // Versions are unique: two migrations sharing one would silently not run.
     expect(new Set(all.map((m) => m.version)).size).toBe(all.length);
@@ -321,5 +321,119 @@ describe('the app queries strictly', () => {
       const nearby = source.slice(index, index + 220);
       expect(nearby, `${table} is read without scoping`).toContain('commander_fid');
     }
+  });
+});
+
+describe('exobiology progress survives leaving', () => {
+  /*
+   * The point of migration 13: a commander called away mid-run comes back and
+   * sees where they stopped. Progress is stored as CURRENT STATE, not as events,
+   * so it stays one row per genus however many samples were taken.
+   */
+  function seed(db: DatabaseSync, over: Partial<Record<string, unknown>> = {}) {
+    const row = {
+      fid: 'F1',
+      sys: 1234,
+      body: 12,
+      genus_token: '$Codex_Ent_Bacterial_Genus_Name;',
+      genus: 'Bacterium',
+      species_token: '$sp;',
+      species: 'Bacterium Vesicula',
+      colour: 'Gold',
+      samples: 2,
+      completed: 0,
+      ...over,
+    };
+    db.prepare(
+      `INSERT INTO exobiology_progress
+         (commander_fid, system_address, body_id, genus_token, genus,
+          species_token, species, colour, samples_taken, completed, updated_at)
+       VALUES (?,?,?,?,?,?,?,?,?,?,'2026-09-29T00:00:00Z')`,
+    ).run(
+      row.fid, row.sys, row.body, row.genus_token, row.genus,
+      row.species_token, row.species, row.colour, row.samples, row.completed,
+    );
+  }
+
+  it('keeps one row per genus per body however often it is written', () => {
+    const db = new DatabaseSync(':memory:');
+    migrate(db, 99);
+    seed(db);
+    // An upsert on the natural key, as the app does.
+    db.prepare(
+      `INSERT INTO exobiology_progress
+         (commander_fid, system_address, body_id, genus_token, genus, samples_taken, updated_at)
+       VALUES ('F1',1234,12,'$Codex_Ent_Bacterial_Genus_Name;','Bacterium',3,'2026-09-29T01:00:00Z')
+       ON CONFLICT (commander_fid, system_address, body_id, genus_token)
+       DO UPDATE SET samples_taken = excluded.samples_taken, updated_at = excluded.updated_at`,
+    ).run();
+
+    const rows = db.prepare('SELECT samples_taken FROM exobiology_progress').all() as Array<{ samples_taken: number }>;
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.samples_taken).toBe(3);
+    db.close();
+  });
+
+  it('keeps two commanders apart on the same body', () => {
+    // Two people sharing a machine must not inherit each other's progress, and
+    // what one has found is a spoiler for the other.
+    const db = new DatabaseSync(':memory:');
+    migrate(db, 99);
+    seed(db, { fid: 'F1', samples: 2 });
+    seed(db, { fid: 'F2', samples: 0 });
+
+    const mine = db.prepare(
+      `SELECT samples_taken FROM exobiology_progress WHERE commander_fid = 'F1'`,
+    ).all() as Array<{ samples_taken: number }>;
+    expect(mine).toHaveLength(1);
+    expect(mine[0]!.samples_taken).toBe(2);
+    db.close();
+  });
+
+  it('keeps the same genus on two bodies apart', () => {
+    // Measured: 9 of 25 species were sampled on more than one body.
+    const db = new DatabaseSync(':memory:');
+    migrate(db, 99);
+    seed(db, { body: 12 });
+    seed(db, { body: 13 });
+    const all = db.prepare('SELECT body_id FROM exobiology_progress ORDER BY body_id').all();
+    expect(all).toHaveLength(2);
+    db.close();
+  });
+
+  it('allows an unsampled genus with no species at all', () => {
+    /*
+     * A surface scan reports a genus and nothing finer, so the species columns
+     * must be nullable. A NOT NULL there would have forced a guessed species.
+     */
+    const db = new DatabaseSync(':memory:');
+    migrate(db, 99);
+    expect(() =>
+      seed(db, { species_token: null, species: null, colour: null, samples: 0 }),
+    ).not.toThrow();
+    db.close();
+  });
+
+  it('allows an unestablished sample count', () => {
+    // NULL means "in progress, count not established" -- distinct from 0.
+    const db = new DatabaseSync(':memory:');
+    migrate(db, 99);
+    seed(db, { samples: null });
+    const row = db.prepare('SELECT samples_taken FROM exobiology_progress').get() as { samples_taken: number | null };
+    expect(row.samples_taken).toBeNull();
+    db.close();
+  });
+
+  it('survives a restart, because progress is on disk rather than in memory', () => {
+    const db = new DatabaseSync(':memory:');
+    migrate(db, 99);
+    seed(db);
+    const before = db.prepare('SELECT COUNT(*) AS n FROM exobiology_progress').get() as { n: number };
+    expect(before.n).toBe(1);
+    // Re-running migrations, as a relaunch does, must not clear it.
+    migrate(db, 99);
+    const after = db.prepare('SELECT COUNT(*) AS n FROM exobiology_progress').get() as { n: number };
+    expect(after.n).toBe(1);
+    db.close();
   });
 });

@@ -9,10 +9,10 @@
 import { describe, expect, it } from 'vitest';
 
 import {
-  LIVE_COMPLETION_VISIBLE_MS,
   countdownTo,
   liveJournalPanel,
   liveJournalTitle,
+  type OverlayExobiologyRow,
   type OverlayLiveExobiology,
 } from '../src/lib/overlay.js';
 
@@ -56,17 +56,33 @@ describe('countdownTo', () => {
 
 /* --------------------------------------------- live journal vs live activity */
 
-const sampling: OverlayLiveExobiology = {
-  kind: 'exobiology',
-  genus: 'Stratum',
-  species: 'Stratum Tectonicas',
-  colour: 'Emerald',
-  bodyName: 'Nervi 4 a',
-  samplesTaken: 1,
+const r = (
+  genus: string,
+  status: OverlayExobiologyRow['status'],
+  samplesTaken: number | null,
+  species: string | null = null,
+  colour: string | null = null,
+): OverlayExobiologyRow => ({
+  genus,
+  species,
+  colour,
+  status,
+  samplesTaken,
   samplesRequired: 3,
-  completed: false,
-  genera: [{ genus: 'Stratum', status: 'sampling', samplesTaken: 1 }],
-  unscannedCount: 0,
+});
+
+/** The body that prompted this: one collected, one partial, one untouched. */
+const roster: OverlayLiveExobiology = {
+  kind: 'exobiology',
+  bodyName: 'Wregoe LS-N b51-0 A 7 g',
+  rows: [
+    r('Bacterium', 'complete', 3, 'Bacterium Vesicula', 'Gold'),
+    r('Aleoida', 'sampling', 2, 'Aleoida Coronamus', 'Turquoise'),
+    r('Concha', 'unscanned', 0),
+  ],
+  completedCount: 1,
+  unscannedCount: 1,
+  total: 3,
   updatedAt: '2026-09-01T00:00:00Z',
 };
 
@@ -82,37 +98,31 @@ const genericEntry = {
 };
 
 describe('which panel the Live Journal widget shows', () => {
-  it('prefers live sampling progress over the newest recorded entry', () => {
+  it('prefers the exobiology roster over the newest recorded entry', () => {
     /*
      * The decision the whole change turns on. "2 biological signals detected" is
-     * already what Current Context says; the sample counter is not said anywhere
-     * else on screen.
+     * already what Current Context says; where the commander got to on each
+     * organism is not said anywhere else on screen.
      */
-    const panel = liveJournalPanel({ liveActivity: sampling, liveJournal: genericEntry });
+    const panel = liveJournalPanel({ liveActivity: roster, liveJournal: genericEntry });
     expect(panel?.kind).toBe('exobiology');
     expect(liveJournalTitle(panel)).toBe('Exobiology');
   });
 
-  it('falls back to the newest entry when nothing is in progress', () => {
+  it('falls back to the newest entry when the commander is not at a scanned body', () => {
     const panel = liveJournalPanel({ liveActivity: null, liveJournal: genericEntry });
     expect(panel?.kind).toBe('entry');
     expect(liveJournalTitle(panel)).toBe('Field Journal');
   });
 
-  it('shows nothing when there is neither', () => {
-    expect(liveJournalPanel({ liveActivity: null, liveJournal: null })).toBeNull();
+  it('falls back rather than showing an empty roster', () => {
+    // No surface scan means no list, and a blank panel is worse than the entry.
+    const empty: OverlayLiveExobiology = { ...roster, rows: [], total: 0, completedCount: 0, unscannedCount: 0 };
+    expect(liveJournalPanel({ liveActivity: empty, liveJournal: genericEntry })?.kind).toBe('entry');
   });
 
-  it('keeps showing a completed sample rather than dropping straight to history', () => {
-    // The completion is the moment worth seeing, so it holds the panel briefly.
-    const done: OverlayLiveExobiology = { ...sampling, completed: true, samplesTaken: 3 };
-    const panel = liveJournalPanel({
-      liveActivity: done,
-      liveJournal: genericEntry,
-      now: Date.parse(done.updatedAt) + 1000,
-    });
-    expect(panel?.kind).toBe('exobiology');
-    if (panel?.kind === 'exobiology') expect(panel.live.completed).toBe(true);
+  it('shows nothing when there is neither', () => {
+    expect(liveJournalPanel({ liveActivity: null, liveJournal: null })).toBeNull();
   });
 
   it('falls back rather than rendering an activity kind it does not understand', () => {
@@ -120,120 +130,40 @@ describe('which panel the Live Journal widget shows', () => {
      * Forward compatibility. Mining or colonisation progress pushed by a newer
      * build must not produce an empty panel in an older overlay.
      */
-    const unknown = { kind: 'mining', species: null } as unknown as OverlayLiveExobiology;
-    const panel = liveJournalPanel({ liveActivity: unknown, liveJournal: genericEntry });
-    expect(panel?.kind).toBe('entry');
+    const unknown = { kind: 'mining', rows: [] } as unknown as OverlayLiveExobiology;
+    expect(liveJournalPanel({ liveActivity: unknown, liveJournal: genericEntry })?.kind).toBe('entry');
   });
 });
 
-describe('the completion lifecycle', () => {
-  const done: OverlayLiveExobiology = { ...sampling, completed: true, samplesTaken: 3 };
-  const at = Date.parse(done.updatedAt);
-
-  it('gives way to history once the completion is no longer recent', () => {
+describe('the roster does not go stale', () => {
+  it('stays regardless of how long ago the last sample was', () => {
     /*
-     * A panel still announcing a sample finished half an hour ago is the
-     * stale-context problem this project has already fixed once.
+     * Staleness was the wrong model for this panel. It describes the body the
+     * commander is standing on rather than an event that happened, so it is
+     * current for as long as they are there -- a commander who returns after a
+     * week still needs to know which organism they were halfway through.
      */
+    const panel = liveJournalPanel({
+      liveActivity: roster,
+      liveJournal: genericEntry,
+      now: Date.parse(roster.updatedAt) + 7 * 24 * 60 * 60 * 1000,
+    });
+    expect(panel?.kind).toBe('exobiology');
+  });
+
+  it('stays when everything on the body is already collected', () => {
+    // "Nothing left here" is an answer worth showing, not a reason to hide.
+    const done: OverlayLiveExobiology = {
+      ...roster,
+      rows: roster.rows.map((row) => ({ ...row, status: 'complete' as const, samplesTaken: 3 })),
+      completedCount: 3,
+      unscannedCount: 0,
+    };
     const panel = liveJournalPanel({
       liveActivity: done,
       liveJournal: genericEntry,
-      now: at + LIVE_COMPLETION_VISIBLE_MS + 1,
-    });
-    expect(panel?.kind).toBe('entry');
-  });
-
-  it('shows nothing at all when the completion is stale and there is no history', () => {
-    expect(
-      liveJournalPanel({
-        liveActivity: done,
-        liveJournal: null,
-        now: at + LIVE_COMPLETION_VISIBLE_MS + 1,
-      }),
-    ).toBeNull();
-  });
-
-  it('never expires a run that is still in progress', () => {
-    /*
-     * The measured constraint. The longest gap between two stages of one organism
-     * was about fourteen hours: a commander who lands, samples, flies to the next
-     * plant and returns is mid-run the whole time. Timing that out would be wrong
-     * on real data, so only completions age.
-     */
-    const panel = liveJournalPanel({
-      liveActivity: sampling,
-      liveJournal: genericEntry,
-      now: Date.parse(sampling.updatedAt) + 20 * 60 * 60 * 1000,
+      now: Date.parse(done.updatedAt) + 60 * 60 * 1000,
     });
     expect(panel?.kind).toBe('exobiology');
-  });
-
-  it('does not hide a completion whose timestamp cannot be parsed', () => {
-    // An odd clock string is not evidence of staleness.
-    const odd: OverlayLiveExobiology = { ...done, updatedAt: 'not a date' };
-    const panel = liveJournalPanel({ liveActivity: odd, liveJournal: genericEntry, now: at });
-    expect(panel?.kind).toBe('exobiology');
-  });
-});
-
-describe('unfinished business on the body', () => {
-  /*
-   * The body in the corpus that prompted this: `Wregoe LS-N b51-0 A 7 g`, two
-   * genera, one collected and one never touched.
-   */
-  const oneLeft: OverlayLiveExobiology = {
-    ...sampling,
-    completed: true,
-    samplesTaken: 3,
-    genera: [
-      { genus: 'Fonticulua', status: 'complete', samplesTaken: null },
-      { genus: 'Bacterium', status: 'unscanned', samplesTaken: null },
-    ],
-    unscannedCount: 1,
-  };
-
-  it('keeps the panel up past the completion window while a genus is unscanned', () => {
-    /*
-     * Once a specimen is finished the useful thing on screen is no longer the
-     * completion -- it is that another organism on this body has had nothing
-     * collected from it. Hiding that after five minutes throws away the answer to
-     * "what else is down here?" while the commander is still standing on it.
-     */
-    const panel = liveJournalPanel({
-      liveActivity: oneLeft,
-      liveJournal: genericEntry,
-      now: Date.parse(oneLeft.updatedAt) + LIVE_COMPLETION_VISIBLE_MS * 10,
-    });
-    expect(panel?.kind).toBe('exobiology');
-  });
-
-  it('gives way once every genus on the body is collected', () => {
-    const allDone: OverlayLiveExobiology = {
-      ...oneLeft,
-      genera: oneLeft.genera.map((g) => ({ ...g, status: 'complete' as const })),
-      unscannedCount: 0,
-    };
-    const panel = liveJournalPanel({
-      liveActivity: allDone,
-      liveJournal: genericEntry,
-      now: Date.parse(allDone.updatedAt) + LIVE_COMPLETION_VISIBLE_MS + 1,
-    });
-    expect(panel?.kind).toBe('entry');
-  });
-
-  it('still ages out an unscanned body with no roster at all', () => {
-    // No surface scan means no list, and an empty roster is not evidence that
-    // something remains -- so it must not hold the panel open indefinitely.
-    const noRoster: OverlayLiveExobiology = {
-      ...oneLeft,
-      genera: [],
-      unscannedCount: 0,
-    };
-    const panel = liveJournalPanel({
-      liveActivity: noRoster,
-      liveJournal: genericEntry,
-      now: Date.parse(noRoster.updatedAt) + LIVE_COMPLETION_VISIBLE_MS + 1,
-    });
-    expect(panel?.kind).toBe('entry');
   });
 });

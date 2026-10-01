@@ -1,19 +1,22 @@
 /**
- * Live activity: what the commander is doing *right now*.
+ * Live activity: what the commander is doing right now, and where they left off.
  *
  * The Activity Journal is a historical record — durable, concise, one entry per
- * thing accomplished. This is the other half: transient operational progress
- * that is interesting while it is happening and worthless afterwards. The two
- * must not be the same data, because the moment progress is written to history
- * the history becomes a stage-by-stage event list, which is the thing the
- * Journal exists not to be.
+ * thing accomplished. This is the other half: operational progress, which is
+ * interesting while the work is unfinished. The two must not be the same data,
+ * because the moment progress is written to history the history becomes a
+ * stage-by-stage event list, which is the thing the Journal exists not to be.
  *
- * Nothing here is persisted and nothing here becomes an entry.
+ * Progress **is** persisted, but separately and as current state rather than as
+ * events: one row per genus per body, overwritten as it changes. Leaving the
+ * planet, leaving the system or closing the app must not lose a half-finished
+ * specimen — a commander called away mid-run should come back and see exactly
+ * where they stopped instead of guessing.
  *
  * ## The measured ScanOrganic sequence
  *
- * This was measured against the local corpus (303 files, 289,725 events, 323
- * `ScanOrganic`) before any of it was written, and **the obvious reading of the
+ * Measured against the local corpus (303 files, 289,725 events, 323
+ * `ScanOrganic`) before any of this was written, and **the obvious reading of the
  * event names is wrong**:
  *
  * ```
@@ -28,7 +31,7 @@
  * `Analyse` is **not** the third sample; it is the completion event that follows
  * it. Measured: `Analyse` was directly preceded by a `Sample` of the same species
  * in 80 of 80 cases, and every one of the 24 completed species took exactly 3
- * samples. So three samples then an analysis, uniformly.
+ * samples.
  *
  * `WasLogged` is present on all 323 scans and was `false` on every one of them.
  * A field with no observed variation carries no information, so nothing here
@@ -36,56 +39,60 @@
  *
  * ## Why reset rules are so narrow
  *
- * This is the finding that matters most, because the intuitive rules are
- * actively wrong. Measuring what appears *between* the stages of a single
- * organism shows that ordinary sampling is full of events that look like
- * interruptions:
+ * Measuring what appears *between* the stages of a single organism shows that
+ * ordinary sampling is full of events that look like interruptions:
  *
  * | Between stages of one organism | Runs |
  * |---|---|
  * | `Touchdown`, `Liftoff` | 74 + 68 |
- * | `Embark`, `Disembark` | ~140 |
+ * | `Embark`, `Disembark` | most |
  * | `SuitLoadout`, `Music`, `BackpackChange`, `DockSRV` | most |
  * | `Fileheader`, `LoadGame`, `Location`, `Shutdown` | 4 |
  *
  * Commanders fly between plants. They land, get out, sample, get back in, take
  * off, land again — that *is* the activity. Resetting on boarding the ship, on
  * changing suit, or on landing would break the feature for nearly every run.
+ * Even a **game restart** appears mid-run four times.
  *
- * Even a **game restart** appears mid-run four times, so quitting to the menu
- * does not abandon a sample either.
+ * Time is not a signal: the longest gap between two stages of the same organism
+ * was 50,313 seconds — about fourteen hours — so nothing here expires.
  *
- * `FSDJump` never once appears between the stages of a run (0 of 83), which is
- * what makes leaving the system a safe abandonment signal rather than a guess.
+ * **Leaving the system no longer discards progress.** An earlier version cleared
+ * on `FSDJump`, which was a guess: the corpus contains no case of a commander
+ * leaving mid-run, so there was no evidence either way. Persisting is the
+ * behaviour that loses nothing, and the display simply follows the body the
+ * commander is at.
  *
- * Time is not a signal either: the longest gap between two stages of the same
- * organism was 50,313 seconds — about fourteen hours — so nothing here expires.
+ * ## One specimen at a time
+ *
+ * Starting a different genus on the same body returns the previous *partial* row
+ * to unscanned. The evidence: of the 80 completed runs, **every one was
+ * contiguous** — no run ever resumed after another species intervened — and the
+ * only 3 interrupted runs never completed. If partial progress survived switching
+ * organisms, at least one resumed run would be expected among 80.
+ *
+ * Completed specimens are never reset. `Analyse` banked them.
  *
  * ## The genus roster
  *
- * A detailed surface scan reports which genera are present on a body, so the
- * overlay can say what is still unsampled rather than only what is in hand. That
- * this works at all is a measurement, not an assumption:
+ * A detailed surface scan reports which genera a body carries, which is what
+ * lets the overlay say what has *not* been collected. Measured:
  *
  * - `SAASignalsFound.Genuses[].Genus` and `ScanOrganic.Genus` use the **same
  *   tokens**. All 11 sampled genera were DSS-listed, and **zero** genera were
- *   ever sampled that the body's scan had not listed — so the list is complete
- *   enough to base "unscanned" on.
- * - The body identifiers line up: `SAASignalsFound.BodyID` matches
- *   `ScanOrganic.Body`, on all 54 sampled bodies.
- * - The biological signal **count equals the number of genera listed**, in 119 of
- *   119 cases, so the count needs no separate display.
- * - Partial bodies are ordinary: of 60 bodies with a genus list, 47 were finished,
- *   **6 partially done and 7 untouched**. "Unscanned" is a frequent real state.
- * - 17 of 60 bodies were scanned more than once, so a repeat scan must merge
- *   rather than duplicate.
+ *   ever sampled that the body's scan had not listed.
+ * - Body identifiers line up: `SAASignalsFound.BodyID` matches `ScanOrganic.Body`
+ *   on all 54 sampled bodies.
+ * - The biological signal **count equals the number of genera listed**, 119 of 119.
+ * - **One species per genus per body**, 90 of 90, and one variant per species,
+ *   90 of 90. So a row is keyed by genus and filled in once sampled.
+ * - 17 of 60 bodies were scanned more than once, so a repeat scan merges.
  *
  * Matching is on the **raw token**, not the localised name. The two agreed on all
- * 11 genera, but the token is the language-independent identifier and the
- * localised string is a display concern.
+ * 11 genera, but the token is language-independent.
  *
  * What the scan does **not** give is the species — `Genuses` carries only a genus.
- * So an unsampled entry can say "Bacterium" and must not guess which bacterium.
+ * So an unsampled row says "Concha" and must not guess which concha.
  */
 
 import type { NormalizedEvent } from '@edfm/elite-journal';
@@ -96,83 +103,90 @@ import { splitVariant } from './exobiology.js';
  * Samples required for one specimen.
  *
  * Measured, not assumed: all 24 species that reached `Analyse` in the corpus
- * took exactly three. Named rather than inlined so a future species that needs a
- * different count has one place to become a per-species lookup.
+ * took exactly three.
  */
 export const SAMPLES_REQUIRED = 3;
 
-/**
- * One genus on the current body, and how far along it is.
- *
- * `unscanned` is the state this exists for: the detailed surface scan says the
- * genus is down there and nothing has been collected from it.
- */
-export interface GenusProgress {
-  /** Language-independent identifier from the journal. */
-  readonly token: string;
-  /** Localised name for display, e.g. `Bacterium`. */
+/** A genus a body carries, and how far through it the commander is. */
+export interface SpeciesProgress {
+  /** Language-independent genus identifier; the row's key. */
+  readonly genusToken: string;
+  /** Localised genus, e.g. `Concha`. Known from the surface scan alone. */
   readonly genus: string;
-  readonly status: 'unscanned' | 'sampling' | 'complete';
-  /** Only meaningful while `sampling`; null when the count is not established. */
-  readonly samplesTaken: number | null;
-}
-
-/** A biological sample run in progress, or just completed. */
-export interface LiveExobiology {
-  readonly systemName: string | null;
-  readonly systemAddress: number | null;
-  /** `ScanOrganic.Body` is a BodyID integer, never a name. */
-  readonly bodyId: number | null;
-  /** Resolved from an event that carried both; null when nothing has. */
-  readonly bodyName: string | null;
-
-  readonly genus: string | null;
-  readonly species: string | null;
-  /** The variant colour, e.g. `Emerald`. Null when the variant is just the species. */
-  readonly colour: string | null;
-
   /**
-   * How many of the three samples are done.
+   * Species identity, known only once sampling starts.
    *
-   * **Null means "in progress, count not established"** — which is a real state,
-   * not a bug. The journal reader resumes from a byte offset rather than
-   * replaying history, so if the app is started midway through a run the first
-   * event it sees is a `Sample` that could be the second or the third. Both are
-   * consistent with what was observed, so no number is claimed.
+   * Null on an unsampled row, because a surface scan reports a genus and nothing
+   * finer. "Concha" is what the game said; "Concha Renibus" would be a guess.
+   */
+  readonly speciesToken: string | null;
+  readonly species: string | null;
+  /** Variant colour, e.g. `Gold`. Null until sampled, or when there is none. */
+  readonly colour: string | null;
+  /**
+   * Samples collected.
    *
-   * A wrong "1 / 3" would be worse than no number: it would tell the commander
-   * they have two more to take when they have one.
+   * `0` means nothing collected. `null` means **in progress with the count not
+   * established** — the reader resumes from a byte offset rather than replaying,
+   * so a run first seen midway could be on its second or third sample. A wrong
+   * "1 / 3" would say two remain when one does.
    */
   readonly samplesTaken: number | null;
   readonly samplesRequired: number;
-
-  /**
-   * Every genus the body's surface scan reported, with its progress.
-   *
-   * Empty when the body has not been surface-scanned, which is honest: without a
-   * scan there is no list, and an empty roster is not a claim that nothing is
-   * there.
-   */
-  readonly genera: readonly GenusProgress[];
-  /** How many of those have had nothing collected from them. */
-  readonly unscannedCount: number;
-
-  /** First event of this run that this process saw. */
-  readonly startedAt: string;
-  readonly updatedAt: string;
-  /** `Analyse` seen: the specimen is finished and the data is aboard. */
   readonly completed: boolean;
+  readonly startedAt: string | null;
+  readonly updatedAt: string | null;
+}
+
+export type ExobiologyStatus = 'unscanned' | 'sampling' | 'complete';
+
+export function rowStatus(row: SpeciesProgress): ExobiologyStatus {
+  if (row.completed) return 'complete';
+  if (row.samplesTaken === null || row.samplesTaken > 0) return 'sampling';
+  return 'unscanned';
+}
+
+/** The stage line, or null when no number can be stood behind. */
+export function stageText(row: SpeciesProgress): string | null {
+  if (row.completed) return `${row.samplesRequired} / ${row.samplesRequired}`;
+  if (row.samplesTaken === null || row.samplesTaken === 0) return null;
+  return `${row.samplesTaken} / ${row.samplesRequired}`;
+}
+
+/** Everything known about exobiology on the body the commander is at. */
+export interface LiveExobiology {
+  readonly systemName: string | null;
+  readonly systemAddress: number | null;
+  readonly bodyId: number | null;
+  readonly bodyName: string | null;
+  /** One row per genus the surface scan reported, in the order reported. */
+  readonly rows: readonly SpeciesProgress[];
+  /** The genus being sampled right now, if any. */
+  readonly activeGenusToken: string | null;
+  readonly completedCount: number;
+  readonly unscannedCount: number;
+  readonly total: number;
+  /** Most recent change, for the overlay's own staleness decisions. */
+  readonly updatedAt: string;
 }
 
 /**
  * The live state, as a tagged union.
  *
  * One `kind` today. The shape exists so mining, colonisation delivery or carrier
- * operations can be added as further members without the overlay having to grow
- * a second mechanism — the widget switches on `kind` and an unknown one renders
- * nothing rather than crashing.
+ * operations can be added as further members without the overlay growing a second
+ * mechanism — the widget switches on `kind` and renders nothing for one it does
+ * not know.
  */
 export type LiveActivity = { readonly kind: 'exobiology'; readonly exobiology: LiveExobiology };
+
+/** Where the commander is, for the purpose of showing a roster. */
+export interface BodyRef {
+  readonly systemAddress: number | null;
+  readonly bodyId: number;
+  readonly bodyName: string | null;
+  readonly systemName: string | null;
+}
 
 function str(o: Record<string, unknown>, k: string): string | null {
   const v = o[k];
@@ -183,288 +197,242 @@ function num(o: Record<string, unknown>, k: string): number | null {
   return typeof v === 'number' && Number.isFinite(v) ? v : null;
 }
 
-/** Identity of a sample run. A species is sampled on more than one body. */
-function sameRun(
-  a: { systemAddress: number | null; bodyId: number | null; species: string | null },
-  b: { systemAddress: number | null; bodyId: number | null; species: string | null },
-): boolean {
-  return a.systemAddress === b.systemAddress && a.bodyId === b.bodyId && a.species === b.species;
-}
-
-/**
- * Tracks live activity across events.
- *
- * Deliberately separate from `ActivityEngine`: that class turns events into
- * durable entries, and mixing "what is happening" into it would make the two
- * lifecycles hard to keep apart. It takes the body-name map from the engine
- * rather than building a second one — there is one body-resolution
- * implementation and this is not another.
- */
-/** A system has a few dozen bodies; a body had at most 8 genera in the corpus. */
-const MAX_TRACKED_BODIES = 256;
-const MAX_GENERA_PER_BODY = 16;
-
-/** `systemAddress|bodyId`. A BodyID is only unique within a system. */
-function bodyKey(systemAddress: number | null, bodyId: number | null): string {
+export function bodyKey(systemAddress: number | null, bodyId: number | null): string {
   return `${systemAddress ?? '?'}|${bodyId ?? '?'}`;
 }
 
+const MAX_GENERA_PER_BODY = 16;
+
+/**
+ * Tracks exobiology progress on the body the commander is at.
+ *
+ * Holds only the current body. Everything else lives in the database, which the
+ * companion loads on arrival and writes back on change — so this class stays a
+ * pure interpreter of events and can be tested without storage.
+ */
 export class LiveActivityTracker {
-  private current: LiveActivity | null = null;
-  /** Raw `Species` token of the run in progress, for identity comparison. */
-  private speciesToken: string | null = null;
-  /** Raw `Genus` token of the run in progress. */
-  private genusToken: string | null = null;
   private commanderFid: string | null;
 
-  /**
-   * Genera each body's surface scan reported, in the order it reported them.
-   *
-   * Merged on a repeat scan rather than replaced or appended: 17 of 60 bodies in
-   * the corpus were scanned more than once, and both duplicating the list and
-   * discarding the earlier one would be wrong.
-   */
-  private readonly bodyGenera = new Map<string, { token: string; genus: string }[]>();
+  private body: BodyRef | null = null;
+  private rows: SpeciesProgress[] = [];
+  private activeGenusToken: string | null = null;
+  private updatedAt = '';
 
-  /** Genus tokens completed on each body, from `Analyse` and from history. */
-  private readonly completedGenera = new Map<string, Set<string>>();
+  /** Set when the body changed and its stored rows have not been loaded yet. */
+  private hydrationNeeded: BodyRef | null = null;
+  /** Genus tokens whose rows changed and have not been persisted yet. */
+  private readonly dirty = new Set<string>();
 
   constructor(options: { readonly commanderFid: string | null }) {
     this.commanderFid = options.commanderFid;
   }
 
   get state(): LiveActivity | null {
-    return this.current;
+    if (this.body === null || this.rows.length === 0) return null;
+    return {
+      kind: 'exobiology',
+      exobiology: {
+        systemName: this.body.systemName,
+        systemAddress: this.body.systemAddress,
+        bodyId: this.body.bodyId,
+        bodyName: this.body.bodyName,
+        rows: this.rows,
+        activeGenusToken: this.activeGenusToken,
+        completedCount: this.rows.filter((r) => r.completed).length,
+        unscannedCount: this.rows.filter((r) => rowStatus(r) === 'unscanned').length,
+        total: this.rows.length,
+        updatedAt: this.updatedAt,
+      },
+    };
+  }
+
+  /** The body whose stored rows the caller should load, consumed by reading it. */
+  takeHydrationRequest(): BodyRef | null {
+    const req = this.hydrationNeeded;
+    this.hydrationNeeded = null;
+    return req;
+  }
+
+  /** Rows changed since the last drain, for the caller to persist. */
+  takeDirtyRows(): readonly SpeciesProgress[] {
+    if (this.dirty.size === 0) return [];
+    const out = this.rows.filter((r) => this.dirty.has(r.genusToken));
+    this.dirty.clear();
+    return out;
+  }
+
+  /** Where those dirty rows belong. */
+  get currentBody(): BodyRef | null {
+    return this.body;
   }
 
   /**
-   * The commander changed.
+   * Install stored rows for the body just entered.
    *
-   * Cleared unconditionally. A sample run belongs to whoever was taking it, and
-   * showing one commander's progress to another is the same class of mistake as
-   * showing them their missions.
+   * Merged rather than replacing: a surface scan seen since arrival may already
+   * have added genera that storage does not know about yet.
    */
+  hydrate(body: BodyRef, stored: readonly SpeciesProgress[]): void {
+    if (this.body === null || bodyKey(this.body.systemAddress, this.body.bodyId) !== bodyKey(body.systemAddress, body.bodyId)) {
+      return;
+    }
+    for (const row of stored) {
+      const i = this.rows.findIndex((r) => r.genusToken === row.genusToken);
+      if (i === -1) this.rows.push(row);
+      // Stored state wins for a row this session has not touched, because it
+      // carries progress this session never saw.
+      else if (!this.dirty.has(row.genusToken)) this.rows[i] = row;
+    }
+    this.sortRows();
+    this.activeGenusToken =
+      this.rows.find((r) => !r.completed && (r.samplesTaken === null || r.samplesTaken > 0))
+        ?.genusToken ?? null;
+    if (this.updatedAt === '') {
+      this.updatedAt = stored.reduce<string>((max, r) => (r.updatedAt && r.updatedAt > max ? r.updatedAt : max), '');
+    }
+  }
+
+  /** Genus order follows the surface scan; anything unlisted goes last. */
+  private sortRows(): void {
+    // Insertion order is already scan order; nothing to do beyond keeping
+    // completed rows where they are, so the list does not jump around as the
+    // commander works.
+  }
+
   setCommander(fid: string | null): void {
     if (fid === this.commanderFid) return;
     this.commanderFid = fid;
-    this.clear();
+    this.leaveBody();
   }
 
-  /**
-   * Drop the run in progress.
-   *
-   * What the body's surface scan reported is **not** dropped. It is knowledge
-   * about the body rather than about this run, it does not become false when a
-   * sample is abandoned, and re-acquiring it would need another scan.
-   */
-  clear(): void {
-    this.current = null;
-    this.speciesToken = null;
-    this.genusToken = null;
+  private leaveBody(): void {
+    this.body = null;
+    this.rows = [];
+    this.activeGenusToken = null;
+    this.updatedAt = '';
+    this.hydrationNeeded = null;
+    this.dirty.clear();
   }
 
-  /**
-   * Record genera already completed on a body, from the durable Journal.
-   *
-   * Without this the roster would call a genus "unscanned" because *this session*
-   * had not seen it sampled — the reader resumes from a byte offset rather than
-   * replaying history, so a specimen collected last week leaves no trace in
-   * memory. Saying "unscanned" about something already done is exactly the kind
-   * of confident wrong answer this project avoids.
-   */
-  seedCompleted(
-    systemAddress: number | null,
-    bodyId: number | null,
-    /**
-     * Raw tokens, localised names, or a mix.
-     *
-     * Both are accepted because the two sources differ: a live `Analyse` carries
-     * the token, while an entry already in the durable Journal stored only the
-     * localised name. Requiring the token would silently fail to seed exactly the
-     * history this exists to read, so matching tries both. The two agreed on all
-     * 11 genera measured, so this widens what matches without loosening it.
-     */
-    genusTokens: readonly string[],
-  ): void {
-    if (bodyId === null) return;
-    const key = bodyKey(systemAddress, bodyId);
-    const set = this.completedGenera.get(key) ?? new Set<string>();
-    for (const token of genusTokens) set.add(token);
-    if (this.completedGenera.size < MAX_TRACKED_BODIES) this.completedGenera.set(key, set);
-
-    // If this is the body on screen, the roster changes immediately.
-    const live = this.current;
-    if (live !== null && bodyKey(live.exobiology.systemAddress, live.exobiology.bodyId) === key) {
-      this.current = { kind: 'exobiology', exobiology: this.withRoster(live.exobiology) };
+  private enterBody(ref: BodyRef): boolean {
+    if (this.body !== null && bodyKey(this.body.systemAddress, this.body.bodyId) === bodyKey(ref.systemAddress, ref.bodyId)) {
+      // Same body; fill in a name or system that arrived later.
+      const better: BodyRef = {
+        ...this.body,
+        bodyName: this.body.bodyName ?? ref.bodyName,
+        systemName: this.body.systemName ?? ref.systemName,
+      };
+      const changed = better.bodyName !== this.body.bodyName || better.systemName !== this.body.systemName;
+      this.body = better;
+      return changed;
     }
+    this.leaveBody();
+    this.body = ref;
+    this.hydrationNeeded = ref;
+    return true;
   }
 
   /**
    * Observe one event.
    *
-   * Returns true when the live state changed, so the caller can decide whether
-   * to re-render rather than being told on every journal line.
+   * Returns true when what the overlay would draw has changed.
    */
   observe(event: NormalizedEvent, bodyNames: ReadonlyMap<number, string>): boolean {
     const name = event.source.event;
     const raw = event.source.raw as Record<string, unknown>;
     const at = event.source.provenance.timestamp;
 
-    if (name === 'SAASignalsFound') return this.observeSurfaceScan(raw);
+    /*
+     * Arrival. `ApproachBody` covers 56 of 56 sampled bodies in the corpus and
+     * carries the body name, which is why it is the primary signal rather than
+     * something inferred from a scan.
+     */
+    if (name === 'ApproachBody' || name === 'Touchdown') {
+      const bodyId = num(raw, 'BodyID');
+      if (bodyId === null) return false;
+      if (name === 'Touchdown' && raw['OnPlanet'] !== true) return false;
+      return this.enterBody({
+        systemAddress: num(raw, 'SystemAddress'),
+        bodyId,
+        bodyName: str(raw, 'Body') ?? bodyNames.get(bodyId) ?? null,
+        systemName: str(raw, 'StarSystem'),
+      });
+    }
 
+    /*
+     * Departure. A body visit more often ends with `SupercruiseEntry` (471) than
+     * with `LeaveBody` (41), so both are honoured; leaving the system ends it too.
+     *
+     * Nothing is discarded here -- rows are already stored. Only the display
+     * stops, because the commander is no longer there.
+     */
+    if (name === 'SupercruiseEntry' || name === 'LeaveBody' || name === 'FSDJump' || name === 'CarrierJump') {
+      if (this.body === null) return false;
+      this.leaveBody();
+      return true;
+    }
+
+    if (name === 'SAASignalsFound') return this.observeSurfaceScan(raw, at, bodyNames);
     if (name === 'ScanOrganic') return this.observeScan(raw, at, bodyNames);
-
-    /*
-     * Leaving the system abandons a run. Measured: `FSDJump` never appears
-     * between the stages of a single organism in 83 runs, so unlike landing or
-     * boarding the ship this is a signal rather than a guess. The run's body is
-     * also unreachable from the new system, and a BodyID is only unique within
-     * one.
-     */
-    if (name === 'FSDJump' || name === 'CarrierJump' || name === 'Location') {
-      const address = num(raw, 'SystemAddress');
-      if (
-        this.current !== null &&
-        address !== null &&
-        this.current.exobiology.systemAddress !== null &&
-        address !== this.current.exobiology.systemAddress
-      ) {
-        this.clear();
-        return true;
-      }
-      return false;
-    }
-
-    /*
-     * Death, on a single observation.
-     *
-     * Stated honestly: there are 18 `Died` events in the corpus and exactly one
-     * of them falls near a sample run — a `Log` five minutes earlier, with no
-     * further scan of that organism afterwards. That is consistent with death
-     * abandoning the run, and it is one data point, so it is not proof.
-     *
-     * Clearing is the conservative direction: the failure mode is a widget that
-     * stops showing progress the commander could have resumed, which they will
-     * notice and can re-establish with their next sample. The opposite error
-     * asserts progress that no longer exists.
-     *
-     * Only in-progress runs are cleared. A completed specimen survives death
-     * because the data was already banked by `Analyse`.
-     */
-    if (name === 'Died') {
-      if (this.current !== null && !this.current.exobiology.completed) {
-        this.clear();
-        return true;
-      }
-      return false;
-    }
-
-    /*
-     * Selling retires a completed specimen. The data has left the ship, so
-     * continuing to show "sample complete" would describe something the
-     * commander no longer has.
-     */
-    if (name === 'SellOrganicData') {
-      if (this.current !== null && this.current.exobiology.completed) {
-        this.clear();
-        return true;
-      }
-      return false;
-    }
 
     return false;
   }
 
-  /**
-   * A detailed surface scan: which genera are on this body.
-   *
-   * Recorded for every body scanned, not only the one being worked, because the
-   * commander may scan several before landing on any of them.
-   */
-  private observeSurfaceScan(raw: Record<string, unknown>): boolean {
+  /** A detailed surface scan: which genera this body carries. */
+  private observeSurfaceScan(
+    raw: Record<string, unknown>,
+    at: string,
+    bodyNames: ReadonlyMap<number, string>,
+  ): boolean {
     const genuses = Array.isArray(raw['Genuses']) ? (raw['Genuses'] as Record<string, unknown>[]) : [];
     if (genuses.length === 0) return false;
 
-    const systemAddress = num(raw, 'SystemAddress');
     const bodyId = num(raw, 'BodyID');
     if (bodyId === null) return false;
+    const systemAddress = num(raw, 'SystemAddress');
 
-    const key = bodyKey(systemAddress, bodyId);
-    const listed = this.bodyGenera.get(key) ?? [];
+    /*
+     * Usually scanned from orbit before arriving -- 99 of 122 DSS events had no
+     * prior ApproachBody for that body -- so this must not force the display to a
+     * body the commander is only looking at. It updates the roster only when it
+     * is the body they are at; otherwise the caller persists it for later.
+     */
+    const here =
+      this.body !== null && bodyKey(this.body.systemAddress, this.body.bodyId) === bodyKey(systemAddress, bodyId);
+    if (!here) return false;
+
     let added = false;
-
     for (const g of genuses) {
       const token = str(g, 'Genus');
       if (token === null) continue;
-      if (listed.some((e) => e.token === token)) continue;
-      if (listed.length >= MAX_GENERA_PER_BODY) break;
-      listed.push({ token, genus: str(g, 'Genus_Localised') ?? token });
+      if (this.rows.some((r) => r.genusToken === token)) continue;
+      if (this.rows.length >= MAX_GENERA_PER_BODY) break;
+      this.rows.push({
+        genusToken: token,
+        genus: str(g, 'Genus_Localised') ?? token,
+        speciesToken: null,
+        species: null,
+        colour: null,
+        samplesTaken: 0,
+        samplesRequired: SAMPLES_REQUIRED,
+        completed: false,
+        startedAt: null,
+        updatedAt: at,
+      });
+      this.dirty.add(token);
       added = true;
     }
 
-    if (added && this.bodyGenera.size < MAX_TRACKED_BODIES) this.bodyGenera.set(key, listed);
-
-    // A scan of the body currently being worked changes what the overlay shows.
-    if (added && this.current !== null) {
-      const live = this.current.exobiology;
-      if (bodyKey(live.systemAddress, live.bodyId) === key) {
-        this.current = { kind: 'exobiology', exobiology: this.withRoster(live) };
-        return true;
+    if (added) {
+      this.updatedAt = at;
+      if (this.body !== null && this.body.bodyName === null) {
+        this.body = {
+          ...this.body,
+          bodyName: str(raw, 'BodyName') ?? bodyNames.get(bodyId) ?? null,
+        };
       }
     }
     return added;
-  }
-
-  /**
-   * Attach the body's genus roster to a state.
-   *
-   * Computed rather than stored, so it cannot drift from what has been observed.
-   * The genus being sampled right now is included even if no scan listed it
-   * """ + DASH + """ that never happened in the corpus, but reporting a specimen the commander
-   * is visibly holding would be worse than a roster that is one row longer.
-   */
-  private withRoster(live: LiveExobiology): LiveExobiology {
-    const key = bodyKey(live.systemAddress, live.bodyId);
-    const listed = this.bodyGenera.get(key) ?? [];
-    const done = this.completedGenera.get(key) ?? new Set<string>();
-
-    /*
-     * No surface scan, no roster. The specimen being sampled is already the
-     * headline of the widget, so a one-row list restating it would be noise --
-     * and an empty roster is not a claim that nothing else is down there, which
-     * is exactly what an unscanned body cannot support.
-     */
-    if (listed.length === 0) return { ...live, genera: [], unscannedCount: 0 };
-
-    const rows: GenusProgress[] = listed.map((entry) => {
-      if (done.has(entry.token) || done.has(entry.genus)) {
-        return { token: entry.token, genus: entry.genus, status: 'complete', samplesTaken: null };
-      }
-      if (this.genusToken === entry.token && !live.completed) {
-        return {
-          token: entry.token,
-          genus: entry.genus,
-          status: 'sampling',
-          samplesTaken: live.samplesTaken,
-        };
-      }
-      return { token: entry.token, genus: entry.genus, status: 'unscanned', samplesTaken: null };
-    });
-
-    if (this.genusToken !== null && !rows.some((r) => r.token === this.genusToken)) {
-      rows.push({
-        token: this.genusToken,
-        genus: live.genus ?? this.genusToken,
-        status: live.completed ? 'complete' : 'sampling',
-        samplesTaken: live.completed ? null : live.samplesTaken,
-      });
-    }
-
-    return {
-      ...live,
-      genera: rows,
-      unscannedCount: rows.filter((r) => r.status === 'unscanned').length,
-    };
   }
 
   private observeScan(
@@ -473,154 +441,128 @@ export class LiveActivityTracker {
     bodyNames: ReadonlyMap<number, string>,
   ): boolean {
     const scanType = str(raw, 'ScanType');
-    if (scanType === null) return false;
-
+    const genusToken = str(raw, 'Genus');
     const bodyId = num(raw, 'Body');
+    if (scanType === null || genusToken === null || bodyId === null) return false;
+
     const systemAddress = num(raw, 'SystemAddress');
-    const speciesToken = str(raw, 'Species');
-    const scanGenusToken = str(raw, 'Genus');
+
+    // A scan is also an arrival signal, for the case where nothing else said so.
+    this.enterBody({
+      systemAddress,
+      bodyId,
+      bodyName: bodyNames.get(bodyId) ?? null,
+      systemName: this.body?.systemName ?? null,
+    });
 
     const { species, colour } = splitVariant(
       str(raw, 'Variant_Localised'),
       str(raw, 'Species_Localised'),
     );
 
-    const identity = { systemAddress, bodyId, species: speciesToken };
-    const continuing =
-      this.current !== null &&
-      sameRun(
-        {
-          systemAddress: this.current.exobiology.systemAddress,
-          bodyId: this.current.exobiology.bodyId,
-          species: this.speciesToken,
-        },
-        identity,
-      );
+    let i = this.rows.findIndex((r) => r.genusToken === genusToken);
+    if (i === -1) {
+      /*
+       * A genus no surface scan listed. Never observed -- zero genera were
+       * sampled that the body's scan had not listed -- but reporting a specimen
+       * the commander is visibly holding would be worse than a roster one row
+       * longer.
+       */
+      this.rows.push({
+        genusToken,
+        genus: str(raw, 'Genus_Localised') ?? genusToken,
+        speciesToken: null,
+        species: null,
+        colour: null,
+        samplesTaken: 0,
+        samplesRequired: SAMPLES_REQUIRED,
+        completed: false,
+        startedAt: null,
+        updatedAt: at,
+      });
+      i = this.rows.length - 1;
+    }
 
-    const base = {
-      systemName: this.current?.exobiology.systemName ?? null,
-      systemAddress,
-      bodyId,
-      // Resolved through the engine's map. Null when nothing has named this body
-      // yet, which is honest -- the current location would be wrong the moment a
-      // commander's state has moved on from where they scanned.
-      bodyName: bodyId === null ? null : (bodyNames.get(bodyId) ?? null),
-      genus: str(raw, 'Genus_Localised'),
+    const prior = this.rows[i]!;
+    const identity = {
+      speciesToken: str(raw, 'Species'),
       species,
       colour,
-      samplesRequired: SAMPLES_REQUIRED,
-      // Replaced by `withRoster` below; present so the shape is complete.
-      genera: [] as readonly GenusProgress[],
-      unscannedCount: 0,
+      genus: str(raw, 'Genus_Localised') ?? prior.genus,
     };
+
+    let samplesTaken: number | null;
+    let completed = false;
 
     if (scanType === 'Analyse') {
-      /*
-       * Completion. The count is asserted as complete even if this process never
-       * saw the earlier stages, because `Analyse` itself is the proof: measured,
-       * it followed the third sample in 80 of 80 cases.
-       */
-      this.speciesToken = speciesToken;
-      this.genusToken = scanGenusToken;
-
-      // The genus is now done on this body, which is what lets the roster stop
-      // calling it unscanned.
-      if (scanGenusToken !== null) {
-        this.seedCompleted(systemAddress, bodyId, [scanGenusToken]);
-      }
-
-      this.current = {
-        kind: 'exobiology',
-        exobiology: this.withRoster({
-          ...base,
-          samplesTaken: SAMPLES_REQUIRED,
-          startedAt: continuing ? (this.current?.exobiology.startedAt ?? at) : at,
-          updatedAt: at,
-          completed: true,
-        }),
-      };
-      return true;
+      // Proof of three, whatever this process saw beforehand.
+      samplesTaken = SAMPLES_REQUIRED;
+      completed = true;
+    } else if (scanType === 'Log') {
+      samplesTaken = 1;
+    } else if (scanType === 'Sample') {
+      const wasCounting = !prior.completed && prior.samplesTaken !== null && prior.samplesTaken > 0;
+      samplesTaken = wasCounting ? Math.min(prior.samplesTaken! + 1, SAMPLES_REQUIRED) : null;
+    } else {
+      return false;
     }
 
-    if (scanType === 'Log') {
-      // Always the first sample of a specimen. A `Log` for a different organism
-      // replaces whatever was in progress -- measured: the only three runs that
-      // never completed were each followed by a different species' `Log`.
-      this.speciesToken = speciesToken;
-      this.genusToken = scanGenusToken;
-      this.current = {
-        kind: 'exobiology',
-        exobiology: this.withRoster({
-          ...base,
-          samplesTaken: 1,
-          startedAt: at,
-          updatedAt: at,
-          completed: false,
-        }),
-      };
-      return true;
-    }
-
-    if (scanType === 'Sample') {
-      const prior = continuing && !this.current!.exobiology.completed
-        ? this.current!.exobiology.samplesTaken
-        : null;
-
-      this.speciesToken = speciesToken;
-      this.genusToken = scanGenusToken;
-      this.current = {
-        kind: 'exobiology',
-        exobiology: this.withRoster({
-          ...base,
-          // Null propagates: if the count was never established it stays
-          // unestablished rather than being invented from this event.
-          samplesTaken: prior === null ? null : Math.min(prior + 1, SAMPLES_REQUIRED),
-          startedAt: continuing ? (this.current?.exobiology.startedAt ?? at) : at,
-          updatedAt: at,
-          completed: false,
-        }),
-      };
-      return true;
-    }
-
-    // An unrecognised ScanType is preserved as "something happened" rather than
-    // being forced into a stage. Nothing in the corpus produces one.
-    return false;
-  }
-
-  /** Attach a system name once one is known, without disturbing progress. */
-  setSystem(systemName: string | null, systemAddress: number | null): void {
-    if (this.current === null) return;
-    if (systemAddress !== null && this.current.exobiology.systemAddress !== null) {
-      if (systemAddress !== this.current.exobiology.systemAddress) return;
-    }
-    this.current = {
-      ...this.current,
-      exobiology: { ...this.current.exobiology, systemName },
+    this.rows[i] = {
+      ...prior,
+      ...identity,
+      samplesTaken,
+      samplesRequired: SAMPLES_REQUIRED,
+      completed,
+      startedAt: scanType === 'Log' ? at : (prior.startedAt ?? at),
+      updatedAt: at,
     };
+    this.dirty.add(genusToken);
+
+    /*
+     * One specimen at a time. Starting a different genus returns the previous
+     * partial row to unscanned: of 80 completed runs every one was contiguous,
+     * and the only 3 interrupted runs never completed, so partial progress does
+     * not appear to survive switching organisms.
+     *
+     * Completed rows are untouched -- `Analyse` banked them.
+     */
+    if (!completed) {
+      for (let j = 0; j < this.rows.length; j += 1) {
+        if (j === i) continue;
+        const other = this.rows[j]!;
+        if (other.completed) continue;
+        if (other.samplesTaken === 0) continue;
+        this.rows[j] = { ...other, samplesTaken: 0, speciesToken: other.speciesToken, updatedAt: at };
+        this.dirty.add(other.genusToken);
+      }
+    }
+
+    this.activeGenusToken = completed ? null : genusToken;
+    this.updatedAt = at;
+
+    if (this.body !== null && this.body.bodyName === null) {
+      const found = bodyNames.get(bodyId);
+      if (found !== undefined) this.body = { ...this.body, bodyName: found };
+    }
+    return true;
   }
 
   /** Fill in a body name that arrived after the scan did. */
   resolveBodyName(bodyNames: ReadonlyMap<number, string>): boolean {
-    const live = this.current;
-    if (live === null) return false;
-    const { bodyId, bodyName } = live.exobiology;
-    if (bodyId === null || bodyName !== null) return false;
-    const found = bodyNames.get(bodyId);
+    if (this.body === null || this.body.bodyName !== null) return false;
+    const found = bodyNames.get(this.body.bodyId);
     if (found === undefined) return false;
-    this.current = { ...live, exobiology: { ...live.exobiology, bodyName: found } };
+    this.body = { ...this.body, bodyName: found };
     return true;
   }
-}
 
-/**
- * The stage line, as a person would read it.
- *
- * Returns null when the count is not established, so the caller omits the line
- * rather than printing a number nobody can stand behind.
- */
-export function sampleStageText(live: LiveExobiology): string | null {
-  if (live.completed) return `${live.samplesRequired} / ${live.samplesRequired}`;
-  if (live.samplesTaken === null) return null;
-  return `${live.samplesTaken} / ${live.samplesRequired}`;
+  /** Attach a system name once one is known. */
+  setSystem(systemName: string | null, systemAddress: number | null): void {
+    if (this.body === null || systemName === null) return;
+    if (this.body.systemName === systemName) return;
+    if (systemAddress !== null && this.body.systemAddress !== null && systemAddress !== this.body.systemAddress) {
+      return;
+    }
+    this.body = { ...this.body, systemName };
+  }
 }
