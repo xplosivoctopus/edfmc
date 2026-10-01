@@ -30,6 +30,9 @@ const SCAN_BODY =
 const SAA_BIO =
   '{ "timestamp":"2026-09-28T12:02:00Z", "event":"SAASignalsFound", "BodyName":"Wregoe KO-G c24-10 A 5", "SystemAddress":2833504080594, "BodyID":25, "Signals":[ { "Type":"$SAA_SignalType_Biological;", "Type_Localised":"Biological", "Count":2 } ], "Genuses":[ { "Genus":"$Codex_Ent_Stratum_Genus_Name;", "Genus_Localised":"Stratum" }, { "Genus":"$Codex_Ent_Bacterial_Genus_Name;", "Genus_Localised":"Bacterium" } ] }';
 
+const DISEMBARK =
+  '{ "timestamp":"2026-09-28T12:03:20Z", "event":"Disembark", "SRV":false, "Taxi":false, "Multicrew":false, "ID":30, "StarSystem":"Wregoe KO-G c24-10", "SystemAddress":2833504080594, "Body":"Wregoe KO-G c24-10 A 5", "BodyID":25, "OnStation":false, "OnPlanet":true }';
+
 const TOUCHDOWN =
   '{ "timestamp":"2026-09-28T12:03:00Z", "event":"Touchdown", "PlayerControlled":true, "Taxi":false, "Multicrew":false, "StarSystem":"Wregoe KO-G c24-10", "SystemAddress":2833504080594, "Body":"Wregoe KO-G c24-10 A 5", "BodyID":25, "OnStation":false, "OnPlanet":true, "Latitude":-14.2, "Longitude":83.1 }';
 
@@ -131,35 +134,80 @@ describe('exobiology activity', () => {
   });
 });
 
-describe('landing', () => {
-  it('records a landing on a world', () => {
-    const e = engine();
-    e.observe(ev(FSD_JUMP));
-    const entries = e.observe(ev(TOUCHDOWN));
-    expect(entries).toHaveLength(1);
-    expect(entries[0]!.title).toBe('Landed');
-    expect(entries[0]!.bodyName).toBe('Wregoe KO-G c24-10 A 5');
-  });
-
-  it('never claims a first landfall', () => {
-    // The finding, pinned. The only footfall field in the journal is
-    // Scan.WasFootfalled, which reports the body's state when scanned; nothing
-    // reports that the commander achieved one. What was said is recorded; the
-    // claim is not made.
+describe('footfall', () => {
+  it('records footfall on a world the scan said was unwalked', () => {
     const e = engine();
     e.observe(ev(FSD_JUMP));
     e.observe(ev(SCAN_BODY)); // WasFootfalled: false
-    const entry = e.observe(ev(TOUCHDOWN))[0]!;
+    const entries = e.observe(ev(DISEMBARK));
 
-    expect(entry.data['hadPriorFootfallWhenScanned']).toBe(false);
-    expect(entry.title.toLowerCase()).not.toContain('first');
-    expect(JSON.stringify(entry.data).toLowerCase()).not.toContain('firstfootfall');
+    expect(entries).toHaveLength(1);
+    expect(entries[0]!.subtype).toBe('footfall');
+    expect(entries[0]!.title).toBe('Footfall on an unvisited world');
+    expect(entries[0]!.bodyName).toBe('Wregoe KO-G c24-10 A 5');
   });
 
-  it('ignores a touchdown that is not on a planet', () => {
+  it('records nothing for an ordinary landing', () => {
+    // The behaviour that was removed. A touchdown is parking, not a milestone,
+    // and recording all 463 of them is what made the journal unreadable.
     const e = engine();
-    const pad = TOUCHDOWN.replace('"OnPlanet":true', '"OnPlanet":false');
-    expect(e.observe(ev(pad))).toHaveLength(0);
+    e.observe(ev(FSD_JUMP));
+    e.observe(ev(SCAN_BODY));
+    expect(e.observe(ev(TOUCHDOWN))).toHaveLength(0);
+  });
+
+  it('records nothing on a world that was already walked', () => {
+    const e = engine();
+    e.observe(ev(FSD_JUMP));
+    e.observe(ev(SCAN_BODY.replace('"WasFootfalled":false', '"WasFootfalled":true')));
+    expect(e.observe(ev(DISEMBARK))).toHaveLength(0);
+  });
+
+  it('records nothing when no scan reported a footfall flag', () => {
+    /*
+     * The distinction the gate rests on: a body with no flag is unknown, not
+     * unwalked. Bodies scanned before Odyssey carry no flag at all, and
+     * treating absence as evidence would invent a milestone on every one.
+     */
+    const e = engine();
+    e.observe(ev(FSD_JUMP));
+    expect(e.observe(ev(DISEMBARK))).toHaveLength(0);
+  });
+
+  it('does not repeat when the commander steps out a second time', () => {
+    // The corpus has disembark pairs on one body a minute apart.
+    const e = engine();
+    e.observe(ev(FSD_JUMP));
+    e.observe(ev(SCAN_BODY));
+    expect(e.observe(ev(DISEMBARK))).toHaveLength(1);
+    expect(e.observe(ev(DISEMBARK.replace('12:03:20', '12:09:40')))).toHaveLength(0);
+  });
+
+  it('never claims a first footfall', () => {
+    /*
+     * The finding, pinned. `WasFootfalled` reports whether anyone had walked
+     * there when the body was *scanned*, so another commander can footfall it
+     * before this landing. Measured against the game's own First_Footfalls
+     * counter the inference over-claims by 20% (98 candidates against 78), so
+     * no entry may present it as the achievement.
+     */
+    const e = engine();
+    e.observe(ev(FSD_JUMP));
+    e.observe(ev(SCAN_BODY));
+    const entry = e.observe(ev(DISEMBARK))[0]!;
+
+    expect(entry.data['noFootfallRecordedWhenScanned']).toBe(true);
+    expect(entry.title.toLowerCase()).not.toContain('first');
+    expect((entry.detail ?? '').toLowerCase()).not.toContain('first');
+    expect(JSON.stringify(entry.data).toLowerCase()).not.toContain('first');
+  });
+
+  it('ignores stepping out onto a station', () => {
+    const e = engine();
+    e.observe(ev(FSD_JUMP));
+    e.observe(ev(SCAN_BODY));
+    const station = DISEMBARK.replace('"OnStation":false', '"OnStation":true');
+    expect(e.observe(ev(station))).toHaveLength(0);
   });
 });
 
@@ -220,7 +268,7 @@ describe('grouping', () => {
     e.observe(ev(SCAN_BODY));
     const entries: ActivityEntry[] = [
       ...e.observe(ev(SAA_BIO)),
-      ...e.observe(ev(TOUCHDOWN)),
+      ...e.observe(ev(DISEMBARK)),
       ...e.observe(ev(scanOrganic('Analyse'))),
     ];
 

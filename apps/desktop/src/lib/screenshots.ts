@@ -301,7 +301,7 @@ export const MAX_STEM = 120;
  * | Body has a name of its own | **9** |
  *
  * So the body alone is the whole answer 99.9% of the time. The nine exceptions
- * are bodies with proper names """ + DASH + """ `Sirius` / `Lucifer`, `Cai` / `Trango` """ + DASH + """ and
+ * are bodies with proper names — `Sirius` / `Lucifer`, `Cai` / `Trango` — and
  * those are exactly the cases where the system genuinely adds something, so
  * they keep both.
  */

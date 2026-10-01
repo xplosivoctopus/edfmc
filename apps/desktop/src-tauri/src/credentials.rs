@@ -84,6 +84,25 @@ pub fn credential_present(integration: String) -> bool {
     entry.get_password().is_ok()
 }
 
+/// Read a stored secret, **for Rust callers only**.
+///
+/// Deliberately `pub(crate)` and deliberately **not** a `#[tauri::command]`, so
+/// it is unreachable from JavaScript. The boundary this module defends is "a
+/// secret never reaches the webview", not "no code may ever read one" -- an
+/// authenticated request has to be made by somebody.
+///
+/// Making the request in Rust is the whole point: the token goes from the OS
+/// credential store into an `Authorization` header without passing through a
+/// renderer where it could reach a log line, an error message, a crash report
+/// or a screenshot.
+///
+/// If this ever needs to become a command, it does not. Move the caller into
+/// Rust instead.
+pub(crate) fn read_secret(integration: &str) -> Option<String> {
+    let entry = Entry::new(SERVICE, integration).ok()?;
+    entry.get_password().ok()
+}
+
 #[tauri::command]
 pub fn credential_clear(integration: String) -> Result<(), String> {
     let entry = Entry::new(SERVICE, &integration).map_err(|e| format!("Credential store unavailable: {e}"))?;
@@ -138,6 +157,18 @@ mod tests {
         // Assembled rather than written out: include_str! pulls in this test
         // too, so a literal needle would match itself and the check would pass
         // no matter what the module actually exposed.
+        // The internal reader exists for Rust callers; what must not exist is a
+        // way to ask for a secret from the webview. Needles are assembled so
+        // this test does not match its own text.
+        let command = concat!("#[tauri::", "command]");
+        let reader = concat!("fn read_", "secret");
+        for (i, _) in source.match_indices(reader) {
+            let before = &source[i.saturating_sub(120)..i];
+            assert!(
+                !before.contains(command),
+                "the internal reader became a command and can now be called from JavaScript"
+            );
+        }
         let getter = concat!("pub fn ", "credential_get");
         assert!(
             !source.contains(getter),

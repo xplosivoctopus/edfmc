@@ -214,38 +214,46 @@ describe('integrations', () => {
     // The default that matters. Nothing reaches an external service until the
     // commander asks for it.
     const snap = new Companion().snapshot();
-    for (const id of ['eddn', 'edsm', 'inara', 'edastro'] as const) {
+    for (const id of ['eddn', 'edsm', 'inara'] as const) {
       expect(snap.integrations[id].enabled, id).toBe(false);
     }
   });
 
-  it('refuses to enable an integration that is not built', () => {
-    // A switch that appears to work while nothing is sent is worse than one that
-    // says it is unfinished.
-    const c = new Companion();
-    for (const id of ['eddn', 'edsm', 'inara', 'edastro'] as const) {
-      void c.setIntegrationEnabled(id, true);
-      expect(c.snapshot().integrations[id].enabled, id).toBe(false);
+  it('every integration on the screen is actually built', () => {
+    /*
+     * This used to assert the reverse for Inara, which was the last unbuilt
+     * one. All four now transmit, so the claim worth pinning is that none is
+     * presented as finished while its pending reason is still on record.
+     *
+     * The unbuilt-switch rule itself is still covered, against a synthetic
+     * descriptor, in the integrations package -- so finishing the backlog did
+     * not take the rule's coverage with it.
+     */
+    for (const row of new Companion().snapshot().sharing.rows) {
+      expect(row.transmission, row.id).not.toBe('not-built');
     }
   });
 
-  it('reports no sharing activity, because none is wired yet', () => {
+  it('reports no sharing activity on a fresh install', () => {
     /*
-     * EDDN's message builder, sanitiser and queue are finished and tested, but
-     * nothing feeds them from live journal events, so the audit must say so.
+     * The submission loops are now connected, so this no longer asserts that
+     * nothing is wired -- it asserts that a commander who has not switched
+     * anything on is told exactly that, with no queue and nothing sent.
      *
-     * This asserts the honest state rather than an aspiration. When the
-     * submission loop is connected, this test fails -- which is the reminder to
-     * update it deliberately instead of discovering later that the screen had
-     * been claiming activity all along.
+     * It kept its predecessor's job of failing loudly: if a future change made
+     * an integration transmit before being enabled, every row here would stop
+     * reading 'off'.
      */
     const snap = new Companion().snapshot();
     expect(snap.sharing.nothingEverSent).toBe(true);
     expect(snap.sharing.totalPending).toBe(0);
+
     for (const row of snap.sharing.rows) {
-      expect(row.transmission, row.id).toBe('not-built');
       expect(row.everSent, row.id).toBe(false);
       expect(row.canRetryNow, row.id).toBe(false);
+
+      // Built, and switched off: it would send if enabled, and says so.
+      expect(row.transmission, row.id).toBe('off');
     }
   });
 
@@ -261,7 +269,7 @@ describe('integrations', () => {
     // Only whether one exists. The value cannot reach JavaScript at all -- there
     // is no command that reads one back.
     const snap = new Companion().snapshot();
-    for (const id of ['eddn', 'edsm', 'inara', 'edastro'] as const) {
+    for (const id of ['eddn', 'edsm', 'inara'] as const) {
       expect(Object.keys(snap.integrations[id]).sort()).toEqual(['enabled', 'hasCredential']);
     }
     expect(JSON.stringify(snap.integrations)).not.toContain('secret');

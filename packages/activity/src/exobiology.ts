@@ -159,36 +159,59 @@ export function exobiologyEntries(
 }
 
 /**
- * Landing on a body.
+ * Making footfall on a world nobody had walked on.
  *
- * Exploration rather than exobiology as a category, but it is what gives an
- * exobiology run its shape -- the body is where the organisms were.
+ * ## Why this replaced "Landed"
  *
- * **There is no "first landfall" entry, and that is a finding rather than an
- * omission.** The only footfall field in the entire journal is
- * `Scan.WasFootfalled`, which reports the body's state *when it was scanned*.
- * Nothing reports that the commander achieved a first footfall: `Touchdown` and
- * `Disembark` carry no such flag. Claiming one from "unvisited when scanned,
- * then I landed" is an inference, and the brief and this project both forbid
- * presenting an inference as a fact. What the journal said is recorded in `data`
- * so the UI can state it plainly without claiming credit.
+ * This used to record every `Touchdown`, which made the journal a list of
+ * parking events -- 463 of them in the corpus. A landing is not a milestone.
+ * What a commander actually wants remembered is footfall on an untouched world.
+ *
+ * ## Two corrections measured out of the corpus
+ *
+ * **It fires on `Disembark`, not `Touchdown`.** Footfall means standing on the
+ * surface; wheels down in a ship is not footfall, and the game's own
+ * `Planet_Footfalls` statistic counts the former.
+ *
+ * **It is gated on the body being unwalked when scanned.** `Scan.WasFootfalled`
+ * is the only footfall flag the journal carries per body.
+ *
+ * ## What this entry does NOT claim
+ *
+ * It does not claim a first footfall, because the journal cannot support that
+ * claim. `WasFootfalled` reports whether *anyone* had walked there **at the
+ * moment the body was scanned** -- another commander can footfall it between
+ * that scan and this landing.
+ *
+ * That gap was measured, not assumed. Taking every on-foot disembark onto a
+ * body last scanned as unwalked, deduplicated per body and segmented per
+ * commander, yields 98 candidates against the game's own `First_Footfalls`
+ * counter of 78 over the same span: a 20% over-claim, and every mismatch was
+ * the counter staying flat while a candidate fired. So the title says what is
+ * true -- the world was unvisited when it was scanned -- and leaves the
+ * achievement to the game to award.
  */
-export function landingEntries(
+export function footfallEntries(
   event: NormalizedEvent,
   ctx: ActivityContext,
   wasFootfalledWhenScanned: boolean | null,
 ): readonly ActivityEntry[] {
-  if (event.source.event !== 'Touchdown') return [];
+  if (event.source.event !== 'Disembark') return [];
   const raw = event.source.raw as Record<string, unknown>;
 
-  // A touchdown at a settlement pad is arriving somewhere, not landing on a
-  // world. 100% of Touchdowns carry both flags, so this needs no guessing.
+  // On a world, not a station pad or a ship interior.
   if (raw['OnPlanet'] !== true) return [];
-  if (raw['PlayerControlled'] === false) return [];
+  if (raw['OnStation'] === true) return [];
+
+  /*
+   * `null` means the body was never scanned with a footfall flag, which is not
+   * the same as "unwalked" -- a body scanned before Odyssey carries no flag at
+   * all. Only an explicit `false` is evidence of anything.
+   */
+  if (wasFootfalledWhenScanned !== false) return [];
 
   const id = event.source.provenance.eventId;
   const bodyName = str(raw, 'Body');
-  const bodyId = num(raw, 'BodyID');
 
   return [
     {
@@ -198,16 +221,16 @@ export function landingEntries(
       systemName: str(raw, 'StarSystem') ?? ctx.systemName,
       systemAddress: num(raw, 'SystemAddress') ?? ctx.systemAddress,
       bodyName,
-      bodyId,
-      locationName: str(raw, 'NearestDestination_Localised'),
+      bodyId: num(raw, 'BodyID'),
+      locationName: null,
       category: 'exploration',
-      subtype: 'landed',
-      title: 'Landed',
+      subtype: 'footfall',
+      title: 'Footfall on an unvisited world',
       detail: bodyName,
       data: {
-        ...(wasFootfalledWhenScanned === null
-          ? {}
-          : { hadPriorFootfallWhenScanned: wasFootfalledWhenScanned }),
+        // The fact the gate rests on, kept so the UI can be precise about it
+        // and so a later reader can see this was reported, not deduced.
+        noFootfallRecordedWhenScanned: true,
       },
       sources: [id],
     },

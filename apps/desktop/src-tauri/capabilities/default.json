@@ -36,7 +36,30 @@
     "core:window:allow-center",
     "core:window:allow-set-always-on-top",
     "core:webview:allow-get-all-webviews",
-    "opener:allow-open-path",
-    "opener:allow-reveal-item-in-dir"
+    {
+      "identifier": "opener:allow-open-path",
+      "allow": [
+        {
+          "path": "**/*.png"
+        },
+        {
+          "path": "**/*.jpg"
+        },
+        {
+          "path": "**/*.jpeg"
+        },
+        {
+          "path": "**/*.bmp"
+        }
+      ]
+    },
+    {
+      "identifier": "opener:allow-reveal-item-in-dir",
+      "allow": [
+        {
+          "path": "**"
+        }
+      ]
+    }
   ]
 }

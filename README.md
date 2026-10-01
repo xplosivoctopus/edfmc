@@ -180,7 +180,7 @@ scripts/             Journal profiling tooling
 | [ACTIVITY-JOURNAL.md](docs/ACTIVITY-JOURNAL.md) | The commander field journal: what is recorded, and what the journal cannot prove |
 | [RESEARCH.md](docs/RESEARCH.md) | Research framework, session model, data-quality rules |
 | [LOGISTICS.md](docs/LOGISTICS.md) | Confidence engine, sourcing planner, construction projects |
-| [INTEGRATIONS.md](docs/INTEGRATIONS.md) | EDDN, EDSM, Inara, EDAstro: what each sends, and where credentials live |
+| [INTEGRATIONS.md](docs/INTEGRATIONS.md) | EDDN, EDSM, Inara: what each sends, and where credentials live |
 | [PLUGINS.md](docs/PLUGINS.md) | Installing and writing plugins, and why they are safe |
 | [EXTENSIONS.md](docs/EXTENSIONS.md) | Extension architecture: tiers, threat model, API boundaries, roadmap |
 | [EDDN.md](docs/EDDN.md) | EDDN ingestion, schemas, normalization decisions |

@@ -23,6 +23,7 @@ import {
   proposeFilename,
   type ScreenshotRecord,
 } from './lib/screenshots.js';
+import { logger } from './lib/logger.js';
 import type {
   CompanionSnapshot,
   ScreenshotDraft,
@@ -260,6 +261,14 @@ export function Screenshots({ snap }: { snap: CompanionSnapshot }) {
   const [category, setCategory] = useState('');
   const [text, setText] = useState('');
   const [confirming, setConfirming] = useState<string | null>(null);
+  const missingCount = snap.screenshots.missing.size;
+
+  /* Re-check on opening the screen: files come and go while the app runs. */
+  useEffect(() => {
+    void snap.refreshScreenshots();
+    // Once per visit, not on every snapshot change.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const filtered = useMemo(() => {
     const needle = text.trim().toLowerCase();
@@ -290,6 +299,34 @@ export function Screenshots({ snap }: { snap: CompanionSnapshot }) {
         </p>
         {snap.screenshots.lastError && <p className="note">{snap.screenshots.lastError}</p>}
       </section>
+
+      {/*
+        Images deleted outside this app. Marked rather than quietly pruned: from
+        here "the file is gone" and "the drive is unplugged" are the same answer,
+        and removing the row would destroy the subject, tags and notes that were
+        typed by hand. The image could be retaken; that writing could not.
+      */}
+      {missingCount > 0 && (
+        <section className="card">
+          <p className="note">
+            {missingCount} {missingCount === 1 ? 'entry points' : 'entries point'} at an image
+            that is not in the folder any more. That may mean it was deleted — or that a drive
+            or network folder is not connected right now, in which case the file will come back.
+          </p>
+          <p className="audit-actions">
+            <button type="button" className="secondary" onClick={() => void snap.refreshScreenshots()}>
+              Check again
+            </button>
+            <button
+              type="button"
+              className="secondary"
+              onClick={() => void snap.screenshots.removeMissingFromCatalog()}
+            >
+              Forget {missingCount} missing {missingCount === 1 ? 'entry' : 'entries'}
+            </button>
+          </p>
+        </section>
+      )}
 
       <section className="card">
         <div className="shot-filters">
@@ -325,6 +362,7 @@ export function Screenshots({ snap }: { snap: CompanionSnapshot }) {
                 key={r.id}
                 row={r}
                 snap={snap}
+                missing={snap.screenshots.missing.has(r.id)}
                 confirming={confirming === r.id}
                 onConfirm={() => setConfirming(r.id)}
                 onCancel={() => setConfirming(null)}
@@ -337,15 +375,41 @@ export function Screenshots({ snap }: { snap: CompanionSnapshot }) {
   );
 }
 
+/**
+ * Open a screenshot, or say why it could not be opened.
+ *
+ * An earlier version swallowed the rejection, so a denied permission looked
+ * exactly like a working button that did nothing — which is how the opener's
+ * missing path scope went unnoticed. A failure the commander can see is a
+ * failure somebody can fix.
+ */
+async function open(action: 'open' | 'reveal', path: string): Promise<void> {
+  try {
+    if (action === 'open') await openPath(path);
+    else await revealItemInDir(path);
+  } catch (err) {
+    // The path is deliberately not included: it names a folder under the
+    // commander's account and usually their Windows username.
+    logger.warn('screenshot', `Could not ${action} the image`, { error: String(err) });
+    window.alert(
+      action === 'open'
+        ? 'Windows would not open that image. It may have been moved, or there may be no app associated with .png files.'
+        : 'Windows would not open that folder.',
+    );
+  }
+}
+
 function ShotRow({
   row,
   snap,
+  missing,
   confirming,
   onConfirm,
   onCancel,
 }: {
   row: ScreenshotRecord;
   snap: CompanionSnapshot;
+  missing: boolean;
   confirming: boolean;
   onConfirm: () => void;
   onCancel: () => void;
@@ -353,9 +417,13 @@ function ShotRow({
   const when = Date.parse(row.capturedAt);
 
   return (
-    <li className="shot-row">
+    <li className={`shot-row${missing ? ' shot-missing' : ''}`}>
       <div className="shot-row-main">
-        <div className="shot-subject">{row.subject ?? '(no subject)'}</div>
+        <div className="shot-subject">
+          {row.subject ?? '(no subject)'}
+          {/* Stated in words, not by dimming alone. */}
+          {missing && <span className="shot-gone"> — image not found</span>}
+        </div>
         <div className="shot-meta">
           <span className="shot-cat">{categoryLabel(row.category)}</span>
           {[placeName(row.systemName, row.bodyName), row.stationName]
@@ -379,20 +447,25 @@ function ShotRow({
           are not separators and the drive letter is read as a host. The opener
           plugin takes an OS path and does the right thing per platform.
         */}
-        <button
-          type="button"
-          className="link"
-          onClick={() => void openPath(row.filePath).catch(() => undefined)}
-        >
-          Open
-        </button>
-        <button
-          type="button"
-          className="link"
-          onClick={() => void revealItemInDir(row.filePath).catch(() => undefined)}
-        >
-          Show in folder
-        </button>
+        {/* Both would fail silently with nothing there to open. */}
+        {!missing && (
+          <>
+            <button
+              type="button"
+              className="link"
+              onClick={() => void open('open', row.filePath)}
+            >
+              Open
+            </button>
+            <button
+              type="button"
+              className="link"
+              onClick={() => void open('reveal', row.filePath)}
+            >
+              Show in folder
+            </button>
+          </>
+        )}
         {!confirming ? (
           <>
             {/* Removing the entry and deleting the image are separate actions:
@@ -404,9 +477,11 @@ function ShotRow({
             >
               Remove from catalog
             </button>
-            <button type="button" className="link danger" onClick={onConfirm}>
-              Delete image
-            </button>
+            {!missing && (
+              <button type="button" className="link danger" onClick={onConfirm}>
+                Delete image
+              </button>
+            )}
           </>
         ) : (
           <span className="shot-confirm">
@@ -504,7 +579,9 @@ export function ScreenshotSettings({ snap }: { snap: CompanionSnapshot }) {
           <button
             type="button"
             className="secondary"
-            onClick={() => void openPath(snap.screenshots.folder ?? '').catch(() => undefined)}
+            /* Revealed rather than launched: a folder has no image extension,
+               and `open-path` is deliberately restricted to image files. */
+            onClick={() => void open('reveal', snap.screenshots.folder ?? '')}
             disabled={!snap.screenshots.folder}
           >
             Open folder

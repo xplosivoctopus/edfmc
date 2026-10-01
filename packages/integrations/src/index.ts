@@ -3,3 +3,7 @@ export * from './eddn.js';
 export * from './registry.js';
 export * from './queue.js';
 export * from './audit.js';
+export * from './edfm-journal.js';
+export * from './edfm-journal-response.js';
+export * from './edsm.js';
+export * from './inara.js';

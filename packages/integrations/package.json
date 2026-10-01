@@ -4,9 +4,17 @@
   "private": true,
   "type": "module",
   "main": "./src/index.ts",
-  "exports": { ".": "./src/index.ts" },
-  "scripts": { "test": "vitest run", "typecheck": "tsc --noEmit" },
-  "dependencies": { "@edfm/elite-journal": "*" },
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@edfm/elite-journal": "*",
+    "@edfm/activity": "*"
+  },
   "devDependencies": {
     "typescript": "^5.6.0",
     "vitest": "^2.1.0",

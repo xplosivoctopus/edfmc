@@ -6,6 +6,9 @@
 //! the identical pipeline (see docs/ARCHITECTURE.md §2.2).
 
 mod credentials;
+mod edfm_journal;
+mod edsm;
+mod inara;
 mod journal;
 mod overlay;
 mod plugins;
@@ -818,8 +821,14 @@ pub fn run() {
             screenshot::commit_screenshot,
             screenshot::pictures_dir,
             screenshot::path_exists,
+            screenshot::paths_exist,
             screenshot::folder_writable,
             screenshot::delete_screenshot_file,
+            edfm_journal::edfm_journal_status,
+            edfm_journal::edfm_journal_batch,
+            edsm::edsm_submit,
+            edsm::edsm_discard,
+            inara::inara_submit,
         ])
         .run(tauri::generate_context!())
         .expect("error while running EDFM Companion");

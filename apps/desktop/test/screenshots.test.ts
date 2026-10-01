@@ -447,9 +447,9 @@ describe('screenshots never leave the machine', () => {
   });
 
   it('never sends a screenshot to an integration', () => {
-    // EDDN, EDSM, Inara and EDAstro must not learn that a capture happened.
+    // EDDN, EDSM and Inara must not learn that a capture happened.
     const src = read('lib/screenshots.ts') + read('Screenshots.tsx');
-    for (const service of ['eddn', 'edsm', 'inara', 'edastro']) {
+    for (const service of ['eddn', 'edsm', 'inara']) {
       expect(src.toLowerCase(), service).not.toContain(service);
     }
   });
@@ -605,18 +605,52 @@ describe('bugs found in the running app', () => {
     expect(src).not.toContain('openUrl(');
   });
 
-  it('grants the opener the permission that makes that work', () => {
-    // `opener:default` covers URLs and revealing an item, but not opening a path.
+  it('grants the opener a SCOPED permission, which is what makes it work', () => {
+    /*
+     * Naming the permission is not enough. Both commands are enabled "without
+     * any pre-configured scope", so no path is permitted until one is declared
+     * and the call is denied in silence -- which is exactly how this went
+     * unnoticed the first time.
+     */
     const caps = JSON.parse(
       readFileSync(
         fileURLToPath(new URL('../src-tauri/capabilities/default.json', import.meta.url)),
         'utf8',
       ),
-    ) as { permissions: Array<string | Record<string, unknown>> };
+    ) as { permissions: Array<string | { identifier: string; allow?: Array<{ path?: string }> }> };
 
-    const names = caps.permissions.filter((p): p is string => typeof p === 'string');
-    expect(names).toContain('opener:allow-open-path');
-    expect(names).toContain('opener:allow-reveal-item-in-dir');
+    const scoped = (id: string) =>
+      caps.permissions.find((p) => typeof p === 'object' && p.identifier === id) as
+        | { identifier: string; allow?: Array<{ path?: string }> }
+        | undefined;
+
+    const openPath = scoped('opener:allow-open-path');
+    expect(openPath, 'open-path is not scoped').toBeTruthy();
+    expect(openPath!.allow?.length).toBeGreaterThan(0);
+    // Launching is restricted to images: this feature never opens anything else,
+    // and a capability that could launch any path is a much larger thing to hand
+    // a renderer than it needs.
+    for (const entry of openPath!.allow ?? []) {
+      expect(entry.path, 'open-path may launch a non-image').toMatch(/\.(png|jpe?g|bmp)$/);
+    }
+
+    const reveal = scoped('opener:allow-reveal-item-in-dir');
+    expect(reveal, 'reveal is not scoped').toBeTruthy();
+    expect(reveal!.allow?.length).toBeGreaterThan(0);
+  });
+
+  it('reports an open failure instead of swallowing it', () => {
+    /*
+     * A swallowed rejection made a denied permission look exactly like a
+     * working button that did nothing. A failure somebody can see is a failure
+     * somebody can fix.
+     */
+    const src = readFileSync(
+      fileURLToPath(new URL('../src/Screenshots.tsx', import.meta.url)),
+      'utf8',
+    );
+    expect(src).not.toContain('.catch(() => undefined)');
+    expect(src).toContain("logger.warn('screenshot'");
   });
 
   it('does not prefill a body that merely repeats the system name', async () => {
@@ -705,5 +739,71 @@ describe('the overlay stays out of the picture', () => {
     expect(companion).toContain("'capture_screenshot'");
     // Opting in would be `includeOverlay: true`.
     expect(companion).not.toMatch(/includeOverlay:\s*true/);
+  });
+});
+
+describe('images deleted outside the app', () => {
+  const SRC_DIR = fileURLToPath(new URL('../src/', import.meta.url));
+  const companionSrc = readFileSync(join(SRC_DIR, 'lib', 'companion.ts'), 'utf8');
+  const browserSrc = readFileSync(join(SRC_DIR, 'Screenshots.tsx'), 'utf8');
+
+  it('checks every catalogued file in one call, not one per row', () => {
+    /*
+     * A commander with a few hundred screenshots should not wait on a few
+     * hundred IPC round trips to open the screen.
+     */
+    expect(companionSrc).toContain("'paths_exist'");
+    expect(companionSrc).not.toMatch(/for \(const .* of this\.screenshotList\)[\s\S]{0,200}'path_exists'/);
+  });
+
+  it('never removes a catalog row just because the file is gone', () => {
+    /*
+     * The judgement this feature turns on. "Not found" and "deleted" are the
+     * same answer from here -- an unplugged drive, a disconnected network path,
+     * an unsynced cloud placeholder and a renamed folder all read identically --
+     * and pruning on that would destroy the subject, tags and notes that were
+     * typed by hand. The image could be retaken; that writing could not.
+     *
+     * So the check marks, and only an explicit click deletes.
+     */
+    const check = companionSrc.slice(
+      companionSrc.indexOf('private async checkScreenshotFiles'),
+      companionSrc.indexOf('removeMissingFromCatalog ='),
+    );
+    expect(check.length).toBeGreaterThan(0);
+    expect(check).not.toContain('DELETE');
+    expect(check).toContain('this.missingScreenshots');
+  });
+
+  it('offers the prune as a deliberate action with a count', () => {
+    expect(browserSrc).toContain('removeMissingFromCatalog');
+    expect(browserSrc).toMatch(/Forget \{missingCount\}/);
+    // And a way to re-check first, for the drive that is merely unplugged.
+    expect(browserSrc).toContain('Check again');
+  });
+
+  it('says why an entry is marked, in words rather than by dimming alone', () => {
+    expect(browserSrc).toContain('image not found');
+    // The banner explains the ambiguity rather than asserting deletion.
+    expect(browserSrc).toMatch(/not connected right now/);
+  });
+
+  it('hides the actions that would fail with nothing there', () => {
+    // Open, Show in folder and Delete image all need the file to exist.
+    expect(browserSrc).toMatch(/\{!missing && \(/);
+  });
+
+  it('leaves everything present when the check itself fails', () => {
+    /*
+     * Marking rows as missing because the question could not be asked would be
+     * worse than showing a stale list.
+     */
+    const check = companionSrc.slice(
+      companionSrc.indexOf('private async checkScreenshotFiles'),
+      companionSrc.indexOf('removeMissingFromCatalog ='),
+    );
+    const catchBlock = check.slice(check.indexOf('} catch'));
+    expect(catchBlock).toContain('logger.warn');
+    expect(catchBlock).not.toContain('missingScreenshots =');
   });
 });

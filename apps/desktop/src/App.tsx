@@ -1165,6 +1165,28 @@ function Diagnostics({ snap }: { snap: Snap }) {
         {notice && <p className="note">{notice}</p>}
       </section>
 
+      {/*
+        Safe diagnostics for the EDFM connection. Credential presence, never the
+        credential; error categories, never a server body or a token.
+      */}
+      <section className="card">
+        <h2>EDFM Commander Journal</h2>
+        <div className="grid">
+          <Field label="Connection" value={snap.journalSync.state} />
+          <Field label="Credential stored" value={snap.journalSync.hasCredential ? 'Yes' : 'No'} />
+          <Field label="Pending" value={String(snap.journalSync.pending)} />
+          <Field label="Permanently failed" value={String(snap.journalSync.failed)} />
+          <Field label="Last attempt" value={snap.journalSync.lastAttemptAt ?? 'Never'} />
+          <Field label="Last success" value={snap.journalSync.lastSuccessAt ?? 'Never'} />
+          <Field
+            label="Syncing activity since"
+            value={snap.journalSync.syncingSince ?? 'Not connected'}
+          />
+          <Field label="EDFM entry count" value={String(snap.journalSync.server?.entryCount ?? '—')} />
+        </div>
+        {snap.journalSync.message && <p className="note">{snap.journalSync.message}</p>}
+      </section>
+
       <section className="card">
         <h2>Journal shape</h2>
         <p className="muted">

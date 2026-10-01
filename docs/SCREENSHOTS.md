@@ -248,7 +248,7 @@ contain a real name on a second monitor, a location, finances, or anything else
 that happened to be on screen.
 
 - **Nothing is uploaded. Ever.** Not images, not notes, not metadata — not to
-  EDFM, EDDN, EDSM, Inara, EDAstro, or any plugin. A test asserts that no
+  EDFM, EDDN, EDSM, Inara, or any plugin. A test asserts that no
   network call exists anywhere in this feature's code, and that the names of
   those services do not appear in it.
 - **Paths stay out of the logs.** A screenshot path names a folder under your
@@ -263,6 +263,27 @@ that happened to be on screen.
 
 *Screenshots* in the sidebar: recent captures, filterable by category and by
 free text across subject, system, body and tags.
+
+### Images deleted outside the app
+
+The browser checks whether each catalogued image is still where the catalog says
+it is, and **marks the ones that are not** — it does not remove them.
+
+That is a deliberate choice. From the app's point of view "the file was deleted"
+and "the drive is not connected" are the same answer: an unplugged external
+drive, a disconnected network folder, an unsynced cloud placeholder and a
+renamed folder all read identically. Pruning on that would destroy the subject,
+tags and notes you typed by hand. The image you could retake; that writing you
+could not.
+
+So a missing entry is shown dimmed and labelled **image not found**, its Open,
+Show in folder and Delete image actions are hidden, and a banner offers two
+things: **Check again**, for the drive that was merely unplugged, and **Forget N
+missing entries**, which removes the rows and nothing else.
+
+If the check itself fails, everything stays marked present. Showing rows as
+missing because the question could not be asked would be worse than a stale
+list.
 
 Two deletions, deliberately distinct:
 

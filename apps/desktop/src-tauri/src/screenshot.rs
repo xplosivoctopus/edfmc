@@ -454,6 +454,23 @@ pub fn path_exists(path: String) -> bool {
     Path::new(&path).exists()
 }
 
+/**
+ * Which of these paths are still there.
+ *
+ * Batched because the catalog checks every row at once, and three hundred
+ * separate IPC round trips to ask three hundred one-word questions would make
+ * opening the screen feel broken.
+ *
+ * Returns a flag per input, in order. A path that cannot be examined at all
+ * reports `false` the same as a missing one: from here "the drive is
+ * disconnected" and "the file was deleted" are the same answer, which is
+ * exactly why the caller marks rather than deletes.
+ */
+#[tauri::command]
+pub fn paths_exist(paths: Vec<String>) -> Vec<bool> {
+    paths.iter().map(|p| Path::new(p).is_file()).collect()
+}
+
 /// Whether a folder can actually be written to.
 ///
 /// Checked by writing, not by reading permissions: a folder on a disconnected
