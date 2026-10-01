@@ -33,9 +33,23 @@ const queue = (over: Partial<QueueSummary>): QueueSummary => ({ ...EMPTY_QUEUE, 
 /** A descriptor that is built, so gate logic can be tested independently. */
 const built = { ...INTEGRATIONS.eddn, implemented: true };
 
+/*
+ * And one that is not.
+ *
+ * Synthetic on purpose. This used to point at whichever integration happened to
+ * be unfinished, so finishing that one broke the gate's own tests and the gate
+ * briefly had no coverage at all. The rule outlives the backlog, so the fixture
+ * should too.
+ */
+const unbuilt = {
+  ...INTEGRATIONS.eddn,
+  implemented: false,
+  pendingReason: 'Not built yet, for the purposes of this test.',
+};
+
 describe('transmission state', () => {
   it('reports an unbuilt integration as sending nothing, whatever its switches say', () => {
-    const row = sharingRow(INTEGRATIONS.edsm, {
+    const row = sharingRow(unbuilt, {
       ...base,
       enabled: true,
       hasCredential: true,
@@ -51,9 +65,7 @@ describe('transmission state', () => {
     // behind a reassuring state.
     const neverSent = sharingRow(built, { ...base, enabled: true });
     expect(neverSent.transmission).toBe('never-sent');
-    expect(sharingRow(INTEGRATIONS.edsm, { ...base, enabled: true }).transmission).toBe(
-      'not-built',
-    );
+    expect(sharingRow(unbuilt, { ...base, enabled: true }).transmission).toBe('not-built');
   });
 
   it('counts pending work rather than describing it vaguely', () => {
@@ -88,7 +100,7 @@ describe('transmission state', () => {
   });
 
   it('distinguishes a missing credential from a failure', () => {
-    const needsKey = { ...INTEGRATIONS.edsm, implemented: true };
+    const needsKey = { ...INTEGRATIONS.inara, implemented: true };
     const row = sharingRow(needsKey, { ...base, enabled: true });
     expect(row.transmission).toBe('needs-credential');
     expect(row.summary).toContain('API key');
@@ -100,7 +112,7 @@ describe('queue controls', () => {
     // Retryable items exist, but the integration is unbuilt: a retry button here
     // would do nothing and imply otherwise.
     expect(
-      sharingRow(INTEGRATIONS.edsm, {
+      sharingRow(unbuilt, {
         ...base,
         enabled: true,
         hasCredential: true,
@@ -207,11 +219,28 @@ describe('the universal promise', () => {
     }
   });
 
-  it('covers the things the commander was promised stay local', () => {
+  it('covers the things no integration ever receives', () => {
     const universal = universalNeverShares(integrationsList()).join(' | ');
-    expect(universal).toMatch(/Activity Journal/);
-    expect(universal).toMatch(/notes/);
+    expect(universal).toMatch(/Chat, friends/);
+    expect(universal).toMatch(/credits/);
+    expect(universal).toMatch(/reputation/);
     expect(universal).toMatch(/switched off/);
+  });
+
+  it('no longer claims the Activity Journal is universal, because it is not', () => {
+    /*
+     * It stays local to every *community* database, and that is still asserted
+     * per service. But the first-party EDFM sync carries it to the commander's
+     * own account by design, so stating it as a promise that holds for all of
+     * them would be false -- and a false line at the top of a privacy page
+     * discredits the true ones beside it.
+     */
+    const universal = universalNeverShares(integrationsList()).join(' | ');
+    expect(universal).not.toMatch(/Activity Journal/);
+
+    for (const id of ['eddn', 'edsm', 'inara'] as const) {
+      expect(INTEGRATIONS[id].privacy.neverShares.join(' '), id).toContain('Activity Journal');
+    }
   });
 
   it('would be empty if one service dropped a guarantee', () => {

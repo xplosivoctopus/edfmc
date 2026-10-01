@@ -35,6 +35,16 @@ tauri-plugin-sql = { version = "2", features = ["sqlite"] }
 # A user-chosen global hotkey for screenshot capture. Nothing is bound by
 # default -- see src/screenshot.rs and docs/SCREENSHOTS.md.
 tauri-plugin-global-shortcut = "2"
+# Rust-side HTTP for the EDFM journal sync, so the token goes from the OS
+# credential store into an Authorization header without entering JavaScript.
+# native-tls matches the trimming on tauri-plugin-http: schannel is the TLS
+# stack Windows already has.
+reqwest = { version = "0.12", default-features = false, features = [
+    "native-tls",
+    "charset",
+    "http2",
+] }
+tokio = { version = "1", features = ["time"] }
 # PNG encoding only. The `image` crate would bring a dozen decoders for formats
 # this never reads; captures are always written as PNG.
 png = "0.17"

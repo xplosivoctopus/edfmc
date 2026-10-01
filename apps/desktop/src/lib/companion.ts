@@ -12,6 +12,8 @@ import {
   JournalEngine,
   applyEvent,
   initialState,
+  listJournalFiles,
+  replayFile,
   resolveJournalDirectory,
   setDefaultFs,
   isKnown,
@@ -100,7 +102,7 @@ import {
 
 import { logger } from './logger.js';
 import { httpFetch } from './http.js';
-import { credentialPresent } from './credentials.js';
+import { credentialClear, credentialPresent, credentialSet } from './credentials.js';
 import {
   ActivityEngine,
   LiveActivityTracker,
@@ -118,6 +120,28 @@ import { DEFAULT_GUIDANCE_MODE, type GuidanceMode } from '@edfm/context';
 import {
   EMPTY_QUEUE,
   INTEGRATIONS,
+  EDDN_JOURNAL_EVENTS,
+  EDDN_UPLOAD_URL,
+  applyBatchOutcome,
+  auditEddnMessage,
+  backoffFor,
+  buildBatch,
+  augmentForEdsm,
+  buildInaraBatch,
+  buildEddnJournalMessage,
+  classifyHttp,
+  isDiscardedByEdsm,
+  parseEdsmDiscard,
+  parseEdsmResponse,
+  parseInaraResponse,
+  toInaraLocation,
+  type InaraEvent as InaraLocationEvent,
+  classifyFailure,
+  isWithinPhaseOne,
+  looksLikeJournalToken,
+  parseBatchOutcome,
+  parseStatus,
+  type JournalStatus,
   integrationsList,
   sharingAudit,
   type IntegrationId,
@@ -208,6 +232,63 @@ const OVERLAY_MISSION_ROWS = 5;
 const COMPANION_VERSION = '0.1.0';
 
 /**
+ * Subtypes a backfill may send.
+ *
+ * Named explicitly rather than taking whatever is in the table, because the
+ * table outlives the rules. `landed` is the reason: an entry per touchdown used
+ * to be recorded, that was dropped as noise, and those rows are still on disk.
+ * A backfill driven by "everything stored" would upload hundreds of them to a
+ * public profile -- activity this app no longer considers worth recording.
+ */
+const SYNCABLE_SUBTYPES = [
+  'sample-completed',
+  'signals-detected',
+  'data-sold',
+  'footfall',
+] as const;
+
+/** Between backfill batches, so a long catch-up is not a burst of traffic. */
+const BACKFILL_PAUSE_MS = 1_500;
+
+/** A row of `activity_entries`, as SQLite hands it back. */
+interface ActivityRow {
+  id: string;
+  commander_fid: string;
+  occurred_at: string;
+  category: string;
+  subtype: string;
+  system_name: string | null;
+  system_address: number | null;
+  body_name: string | null;
+  body_id: number | null;
+  location_name: string | null;
+  title: string;
+  detail: string | null;
+  data: string;
+  sources: string;
+}
+
+/** One place to turn a row into an entry, so the readers cannot drift apart. */
+function activityFromRow(r: ActivityRow): ActivityEntry {
+  return {
+    id: r.id,
+    commanderFid: r.commander_fid,
+    occurredAt: r.occurred_at,
+    category: r.category as ActivityEntry['category'],
+    subtype: r.subtype,
+    systemName: r.system_name,
+    systemAddress: r.system_address,
+    bodyName: r.body_name,
+    bodyId: r.body_id,
+    locationName: r.location_name,
+    title: r.title,
+    detail: r.detail,
+    data: safeJsonObject(r.data),
+    sources: safeJsonStrings(r.sources),
+  };
+}
+
+/**
  * EDFM API origin.
  *
  * Overridable at build time so a developer can point at a local server without
@@ -279,6 +360,15 @@ export interface CompanionSnapshot {
   /** Bound setter, so the screen needs no import of the companion singleton. */
   readonly setIntegrationEnabled: (id: IntegrationId, enabled: boolean) => Promise<void>;
   /**
+   * Store a key for an integration that needs one.
+   *
+   * Returns null on success, or a sentence. The value goes straight to the OS
+   * credential store; it is never kept in the snapshot, so it cannot reach a
+   * render, a log or a crash report.
+   */
+  readonly setIntegrationCredential: (id: IntegrationId, secret: string) => Promise<string | null>;
+  readonly clearIntegrationCredential: (id: IntegrationId) => Promise<void>;
+  /**
    * What has actually left this machine, for the active commander.
    *
    * Read from the queue and the per-integration state rather than inferred from
@@ -309,6 +399,41 @@ export interface CompanionSnapshot {
   readonly logistics: LogisticsView;
   readonly plugins: PluginView;
   readonly screenshots: ScreenshotView;
+  readonly journalSync: JournalSyncView;
+  /** Store a token, verify it against `/status`, and connect. */
+  readonly connectJournalSync: (token: string) => Promise<string | null>;
+  /** Forget the local credential. Does not revoke the token on the website. */
+  readonly disconnectJournalSync: () => Promise<void>;
+  /** Push whatever is waiting now. */
+  readonly syncJournalNow: () => Promise<void>;
+  /**
+   * What a backfill would send, without sending any of it.
+   *
+   * Asked before the commander is offered the choice, so the decision is made
+   * against a real count and a real span rather than in the abstract.
+   */
+  readonly journalBackfillPreview: () => Promise<{
+    entries: number;
+    oldest: string | null;
+    newest: string | null;
+  }>;
+  /** Queue everything not yet acknowledged, however old, and send it. */
+  readonly backfillJournalSync: (
+    onProgress?: (sent: number, total: number) => void,
+  ) => Promise<string | null>;
+  /** Stop a running backfill at the end of the batch in flight. */
+  readonly cancelJournalBackfill: () => void;
+  /**
+   * Rebuild the local Activity Journal from the journal files on disk.
+   *
+   * Local only; it sends nothing. Without it a backfill has almost nothing to
+   * send, because activity from before the feature existed was never recorded.
+   */
+  readonly rebuildActivityHistory: (
+    onProgress?: (done: number, total: number) => void,
+  ) => Promise<{ filesRead: number; entriesAdded: number; failed: number }>;
+  /** Stop a running rebuild at the next file boundary. */
+  readonly cancelActivityRebuild: () => void;
   /** Capture now. Bound so a hotkey handler needs no import of the singleton. */
   readonly captureScreenshot: () => Promise<void>;
   readonly saveScreenshot: (draft: ScreenshotSaveRequest) => Promise<void>;
@@ -317,6 +442,8 @@ export interface CompanionSnapshot {
   readonly setScreenshotFolder: (path: string) => Promise<boolean>;
   readonly updateScreenshot: (id: string, patch: Partial<ScreenshotRecord>) => Promise<void>;
   readonly removeScreenshotFromCatalog: (id: string) => Promise<void>;
+  /** Re-read the catalog and re-check which images are still on disk. */
+  readonly refreshScreenshots: () => Promise<void>;
   readonly deleteScreenshotImage: (id: string) => Promise<void>;
 }
 
@@ -422,6 +549,58 @@ export interface ScreenshotView {
   readonly draftInMainWindow: boolean;
   /** Last failure, already sanitised of paths. */
   readonly lastError: string | null;
+  /**
+   * Catalog ids whose image is not where the catalog says it is.
+   *
+   * Marked rather than removed. "Not found" and "deleted" are the same answer
+   * from here: an unplugged drive, a disconnected network path, an unsynced
+   * cloud placeholder and a renamed folder all read identically, and pruning on
+   * that would silently destroy the subject, tags and notes the commander typed.
+   * The image could be retaken; that writing could not.
+   */
+  readonly missing: ReadonlySet<string>;
+  /** Forget every entry whose image is gone. Only ever from an explicit click. */
+  readonly removeMissingFromCatalog: () => Promise<void>;
+}
+
+/**
+ * The EDFM Commander Journal connection, as the commander sees it.
+ *
+ * Phase 1 is push-only: new derived Activity Journal entries go up. There is no
+ * read endpoint in the deployed API, so there is nothing here about downloading
+ * or restoring, and inventing a field for it would promise something the server
+ * cannot do.
+ */
+export type JournalConnectionState =
+  | 'not-connected'
+  | 'connected'
+  | 'syncing'
+  | 'needs-attention'
+  | 'unavailable';
+
+export interface JournalSyncView {
+  readonly state: JournalConnectionState;
+  readonly hasCredential: boolean;
+  /** Entries waiting to go up, for the active commander. */
+  readonly pending: number;
+  /** Entries the server will never accept. */
+  readonly failed: number;
+  /** ISO 8601 of the last acknowledged sync, or null. */
+  readonly lastSuccessAt: string | null;
+  readonly lastAttemptAt: string | null;
+  /** One sentence, already safe to show. Never a raw server body. */
+  readonly message: string | null;
+  /** What `/status` last reported. Null until a successful check. */
+  readonly server: JournalStatus | null;
+  /**
+   * When sync was switched on. Entries from before this are not uploaded
+   * automatically, and the UI says so rather than leaving it to be assumed.
+   */
+  readonly syncingSince: string | null;
+  /** A backfill is in flight. Both it and a rebuild are one-at-a-time. */
+  readonly backfilling: boolean;
+  /** A local history rebuild is in flight. */
+  readonly rebuilding: boolean;
 }
 
 /** What the app knows about itself and about the journal's shape. */
@@ -598,6 +777,1372 @@ function safeJsonStrings(text: string): string[] {
 
 export class Companion {
   private started = false;
+  /* ------------------------------------------------------------- EDSM */
+
+  private edsmSending = false;
+  private edsmTimer: ReturnType<typeof setInterval> | null = null;
+  /** Fetched live; empty until it arrives, and empty filters nothing. */
+  private edsmDiscard: ReadonlySet<string> = new Set();
+
+  /**
+   * Offer one journal event to EDSM.
+   *
+   * EDSM forwards journal entries rather than taking a vocabulary of its own,
+   * so almost any event is a candidate — which makes the discard list the gate.
+   * 141 event names are on it, and sending them is traffic EDSM has explicitly
+   * asked not to receive.
+   *
+   * **Nothing is queued while the integration is off**, enforced here rather
+   * than at send time, so switching EDSM off does not leave a queue filling up.
+   */
+  private observeForEdsm(event: NormalizedEvent): void {
+    if (!this.integrationState.edsm.enabled) return;
+    if (!INTEGRATIONS.edsm.implemented) return;
+    if (!this.integrationState.edsm.hasCredential) return;
+    if (isDiscardedByEdsm(event.source.event, this.edsmDiscard)) return;
+
+    const s = this.state;
+    // Without a commander name EDSM cannot attribute the entry, and the name is
+    // the one field it will not accept a guess for.
+    if (!isKnown(s.commander)) return;
+
+    const augmented = augmentForEdsm(event.source.raw as Record<string, unknown>, {
+      systemName: isKnown(s.starSystem) ? s.starSystem : null,
+      systemAddress: isKnown(s.systemAddress) ? s.systemAddress : null,
+      systemCoordinates: isKnown(s.starPos) ? s.starPos : null,
+      stationName: isKnown(s.stationName) ? s.stationName : null,
+      marketId: isKnown(s.marketId) ? s.marketId : null,
+      // The journal's numeric ship id is not tracked in state, so it is
+      // omitted rather than guessed -- which is what EDSM expects for an
+      // unknown field anyway.
+      shipId: null,
+    });
+
+    void this.enqueueEdsm(event.source.provenance.eventId, augmented);
+  }
+
+  private async enqueueEdsm(eventId: string, entry: unknown): Promise<void> {
+    if (!this.db) return;
+    const now = new Date().toISOString();
+    try {
+      // Keyed on the journal event id, which is stable across restart and
+      // replay, so re-reading a file cannot submit the same entry twice.
+      await this.db.execute(
+        `INSERT OR IGNORE INTO integration_queue
+           (id, integration, commander_fid, status, payload, attempts, created_at, updated_at)
+         VALUES ($1, 'edsm', $2, 'queued', $3, 0, $4, $4)`,
+        [eventId, this.discoveryFid, JSON.stringify(entry), now],
+      );
+    } catch (err) {
+      logger.warn('edsm', 'Could not queue an entry', { error: String(err) });
+    }
+  }
+
+  private startEdsmDrain(): void {
+    if (this.edsmTimer !== null) return;
+    void this.loadEdsmDiscard();
+    this.edsmTimer = setInterval(() => void this.drainEdsm(), 30_000);
+  }
+
+  /**
+   * Fetch the discard list.
+   *
+   * A failure leaves the set empty, and an empty set filters nothing: guessing
+   * that an event is unwanted would silently lose it.
+   */
+  private async loadEdsmDiscard(): Promise<void> {
+    try {
+      const raw = await invoke<{ status: number; body: string }>('edsm_discard');
+      if (raw.status !== 200) return;
+      this.edsmDiscard = parseEdsmDiscard(JSON.parse(raw.body));
+      logger.info('edsm', 'Loaded the discard list', { events: this.edsmDiscard.size });
+    } catch (err) {
+      logger.warn('edsm', 'Could not load the discard list', { error: String(err) });
+    }
+  }
+
+  /**
+   * Send what is due, in one batch.
+   *
+   * EDSM takes an array, so a reconnecting commander's backlog goes in a few
+   * requests rather than one per entry.
+   */
+  private async drainEdsm(): Promise<void> {
+    if (this.edsmSending || !this.db) return;
+    if (!this.integrationState.edsm.enabled) return;
+    if (!isKnown(this.state.commander)) return;
+
+    this.edsmSending = true;
+    try {
+      const now = new Date().toISOString();
+      const rows = await this.db.select<Array<{ id: string; payload: string; attempts: number }>>(
+        `SELECT id, payload, attempts FROM integration_queue
+          WHERE integration = 'edsm' AND status IN ('queued','retryable')
+            AND (next_attempt_at IS NULL OR next_attempt_at <= $1)
+          ORDER BY created_at
+          LIMIT 50`,
+        [now],
+      );
+      if (rows.length === 0) return;
+
+      const entries: Record<string, unknown>[] = [];
+      const ids: string[] = [];
+      for (const row of rows) {
+        try {
+          entries.push(JSON.parse(row.payload) as Record<string, unknown>);
+          ids.push(row.id);
+        } catch {
+          // A row whose payload cannot be read will never send. Drop it rather
+          // than retrying something unparseable forever.
+          await this.db.execute(
+            `DELETE FROM integration_queue WHERE integration = 'edsm' AND id = $1`,
+            [row.id],
+          );
+        }
+      }
+      if (entries.length === 0) return;
+
+
+      const raw = await invoke<{ status: number; body: string; transport_error: string | null }>(
+        'edsm_submit',
+        {
+          submission: {
+            commander_name: isKnown(this.state.commander) ? this.state.commander : '',
+            software_name: 'EDFM Companion',
+            software_version: COMPANION_VERSION,
+            game_version: isKnown(this.state.gameVersion) ? this.state.gameVersion : null,
+            game_build: isKnown(this.state.build) ? this.state.build : null,
+            message_json: JSON.stringify(entries),
+          },
+        },
+      );
+
+      if (raw.transport_error !== null || raw.status === 0) {
+        await this.backoffQueue('edsm', ids);
+        return;
+      }
+
+      let parsed: unknown = null;
+      try {
+        parsed = JSON.parse(raw.body);
+      } catch {
+        parsed = null;
+      }
+
+      /*
+       * The finding this is built around: EDSM answers HTTP 200 even when it
+       * accepted nothing. The outcome is in `msgnum`, so the status code is
+       * deliberately not consulted.
+       */
+      const outcome = parseEdsmResponse(parsed);
+
+      if (outcome.kind === 'credential') {
+        // A key problem will not fix itself by being retried, and repeating an
+        // authenticated request with a dead key is rude to the server.
+        await this.recordIntegrationError(
+          'edsm',
+          `EDSM rejected the credential (${outcome.code}). Check your API key.`,
+        );
+        logger.warn('edsm', 'Credential rejected', { code: String(outcome.code) });
+        this.notify();
+        return;
+      }
+      if (outcome.kind !== 'accepted') {
+        await this.backoffQueue('edsm', ids);
+        return;
+      }
+
+      // Per entry, in the order submitted. An entry EDSM did not answer for
+      // stays queued rather than being assumed delivered.
+      for (let i = 0; i < ids.length; i += 1) {
+        const result = outcome.perEvent[i];
+        const id = ids[i]!;
+        if (result === undefined) continue;
+        if (result.accepted) {
+          await this.db.execute(
+            `DELETE FROM integration_queue WHERE integration = 'edsm' AND id = $1`,
+            [id],
+          );
+        } else {
+          await this.db.execute(
+            `UPDATE integration_queue SET status = 'rejected', last_error = $2, updated_at = $3
+              WHERE integration = 'edsm' AND id = $1`,
+            [id, `${result.msgnum}: ${result.msg}`.slice(0, 200), new Date().toISOString()],
+          );
+        }
+      }
+      await this.recordIntegrationSuccess('edsm');
+      this.notify();
+    } catch (err) {
+      logger.warn('edsm', 'Send failed', { error: String(err) });
+    } finally {
+      this.edsmSending = false;
+    }
+  }
+
+  /**
+   * Record, or clear, the last error for an integration.
+   *
+   * Written to `integration_state` so the Connections audit shows it: that
+   * screen already asks "what happened last time", and a second place for the
+   * answer would be a second thing to keep in step.
+   */
+  private async recordIntegrationError(integration: string, message: string | null): Promise<void> {
+    if (!this.db || this.discoveryFid === null) return;
+    const now = new Date().toISOString();
+    try {
+      await this.db.execute(
+        `INSERT INTO integration_state (integration, commander_fid, enabled, last_error, updated_at)
+         VALUES ($1, $2, 1, $3, $4)
+         ON CONFLICT (integration, commander_fid)
+         DO UPDATE SET last_error = excluded.last_error, updated_at = excluded.updated_at`,
+        [integration, this.discoveryFid, message, now],
+      );
+      await this.loadSharingState();
+    } catch (err) {
+      logger.warn(integration, 'Could not record the last error', { error: String(err) });
+    }
+  }
+
+  /**
+   * Record that something actually reached a service.
+   *
+   * The counterpart to `recordIntegrationError`, and it was missing: the
+   * Connections audit reads `last_success_at` to answer "when did this last
+   * send", but nothing ever wrote it, so the answer stayed blank however much
+   * had been sent. Clears the last error at the same time, because an error
+   * still on display after a success describes a problem that has passed.
+   */
+  private async recordIntegrationSuccess(integration: string): Promise<void> {
+    if (!this.db || this.discoveryFid === null) return;
+    const now = new Date().toISOString();
+    try {
+      await this.db.execute(
+        `INSERT INTO integration_state
+           (integration, commander_fid, enabled, last_success_at, last_error, updated_at)
+         VALUES ($1, $2, 1, $3, NULL, $3)
+         ON CONFLICT (integration, commander_fid)
+         DO UPDATE SET last_success_at = excluded.last_success_at,
+                       last_error = NULL,
+                       updated_at = excluded.updated_at`,
+        [integration, this.discoveryFid, now],
+      );
+      await this.loadSharingState();
+    } catch (err) {
+      logger.warn(integration, 'Could not record the last success', { error: String(err) });
+    }
+  }
+
+  /** Shared backoff for the community queues. */
+  private async backoffQueue(integration: string, ids: readonly string[]): Promise<void> {
+    if (!this.db || ids.length === 0) return;
+    const now = new Date();
+    for (const id of ids) {
+      const rows = await this.db.select<Array<{ attempts: number }>>(
+        `SELECT attempts FROM integration_queue WHERE integration = $1 AND id = $2`,
+        [integration, id],
+      );
+      const attempts = Number(rows[0]?.attempts ?? 0) + 1;
+      const next = new Date(now.getTime() + backoffFor(attempts) * 1000).toISOString();
+      await this.db.execute(
+        `UPDATE integration_queue
+            SET status = 'retryable', attempts = $3, next_attempt_at = $4, updated_at = $5
+          WHERE integration = $1 AND id = $2`,
+        [integration, id, attempts, next, now.toISOString()],
+      );
+    }
+  }
+
+  /* ------------------------------------------------------------ Inara */
+
+  private inaraSending = false;
+  /** The location Inara was last told about, so it is not told twice. */
+  private inaraLastSent: string | null = null;
+
+  /**
+   * Keep the Inara profile location current.
+   *
+   * Unlike EDDN and EDSM this is not fed from the Activity Journal, because
+   * **Inara has no event that accepts exobiology** -- its write vocabulary is
+   * travel, ranks, ships, materials, market and combat. Feeding it journal
+   * entries would mean inventing event names, so it is fed location instead,
+   * which is the one thing it both documents and commanders want from it.
+   *
+   * `setCommanderTravelLocation` overwrites rather than appends, so there is no
+   * queue: a backlog of old locations would walk the profile through places the
+   * commander has already left. Only the latest is sent, and only when it has
+   * actually changed.
+   */
+  private observeForInara(event: NormalizedEvent): void {
+    if (!this.integrationState.inara.enabled) return;
+    if (!INTEGRATIONS.inara.implemented) return;
+    if (!this.integrationState.inara.hasCredential) return;
+
+    // Arriving somewhere is the only thing that moves the profile. Firing on
+    // every event would send one request per journal line.
+    const name = event.source.event;
+    if (
+      name !== 'Location' &&
+      name !== 'FSDJump' &&
+      name !== 'CarrierJump' &&
+      name !== 'Docked' &&
+      name !== 'ApproachBody' &&
+      name !== 'Touchdown'
+    ) {
+      return;
+    }
+
+    const st = this.state;
+    if (!isKnown(st.commander)) return;
+
+    const at = {
+      systemName: isKnown(st.starSystem) ? st.starSystem : null,
+      systemCoords: isKnown(st.starPos) ? st.starPos : null,
+      stationName: isKnown(st.stationName) ? st.stationName : null,
+      marketId: isKnown(st.marketId) ? st.marketId : null,
+      bodyName: isKnown(st.body) ? st.body : null,
+      occurredAt: event.source.provenance.timestamp,
+    };
+
+    const built = toInaraLocation(at);
+    if (built === null) return;
+
+    /*
+     * Keyed on the location rather than the event, because several events
+     * report arriving at the same place -- `Location` then `Docked`, say -- and
+     * each would otherwise be a separate request saying the same thing.
+     */
+    const fingerprint = JSON.stringify(built.eventData);
+    if (fingerprint === this.inaraLastSent) return;
+    this.inaraLastSent = fingerprint;
+
+    void this.sendInara(built);
+  }
+
+  private async sendInara(locationEvent: InaraLocationEvent): Promise<void> {
+    if (this.inaraSending) return;
+    this.inaraSending = true;
+    try {
+      const st = this.state;
+      const batch = buildInaraBatch({
+        // Supplied by Rust from the credential store; never read here.
+        apiKey: '',
+        commanderName: isKnown(st.commander) ? st.commander : '',
+        commanderFrontierID: this.discoveryFid,
+        appName: 'EDFM Companion',
+        appVersion: COMPANION_VERSION,
+        isBeingDeveloped: false,
+        events: [locationEvent],
+      });
+
+      const raw = await invoke<{ status: number; body: string; transport_error: string | null }>(
+        'inara_submit',
+        {
+          submission: {
+            app_name: batch.header.appName,
+            app_version: batch.header.appVersion,
+            commander_name: batch.header.commanderName,
+            commander_frontier_id: batch.header.commanderFrontierID ?? null,
+            events_json: JSON.stringify(batch.events),
+          },
+        },
+      );
+
+      if (raw.transport_error !== null || raw.status === 0) {
+        // Allowed to be retried: the next arrival will try again, so a dropped
+        // request costs nothing but a slightly stale profile.
+        this.inaraLastSent = null;
+        return;
+      }
+
+      let parsed: unknown = null;
+      try {
+        parsed = JSON.parse(raw.body);
+      } catch {
+        parsed = null;
+      }
+
+      const outcome = parseInaraResponse(parsed);
+      if (outcome.kind === 'credential') {
+        /*
+         * A rejected key will not fix itself, and Inara documents that a header
+         * level failure cancels the batch. Stop and say so rather than
+         * repeating an authenticated request with a dead key.
+         */
+        await this.recordIntegrationError(
+          'inara',
+          `Inara rejected the key: ${outcome.message}`.slice(0, 200),
+        );
+        logger.warn('inara', 'Credential rejected');
+        this.notify();
+        return;
+      }
+      if (outcome.kind !== 'accepted') {
+        this.inaraLastSent = null;
+        logger.warn('inara', 'Location not accepted', { kind: outcome.kind });
+        return;
+      }
+
+      await this.recordIntegrationSuccess('inara');
+      this.notify();
+    } catch (err) {
+      this.inaraLastSent = null;
+      logger.warn('inara', 'Send failed', { error: String(err) });
+    } finally {
+      this.inaraSending = false;
+    }
+  }
+
+  /* ------------------------------------------------------------- EDDN */
+
+  private eddnSending = false;
+  private eddnTimer: ReturnType<typeof setInterval> | null = null;
+
+  /**
+   * Send queued observations on a timer rather than on the event that produced
+   * them.
+   *
+   * Ingest stays off the network entirely: a slow upload cannot delay reading
+   * the journal, and a burst of jumps produces one drain rather than twenty
+   * requests.
+   */
+  private startEddnDrain(): void {
+    if (this.eddnTimer !== null) return;
+    this.eddnTimer = setInterval(() => void this.drainEddn(), 20_000);
+  }
+
+  /**
+   * Offer one journal event to EDDN.
+   *
+   * Called on the high-frequency path, so the cheap rejection comes first: all
+   * but seven event names are out, and that check is a set lookup before
+   * anything is built or read.
+   *
+   * **Nothing is queued while the integration is off.** That is the promise the
+   * Connections screen makes, and it is enforced here rather than at send time,
+   * so switching EDDN off does not leave a queue quietly filling up.
+   */
+  private observeForEddn(event: NormalizedEvent): void {
+    if (!EDDN_JOURNAL_EVENTS.includes(event.source.event)) return;
+    if (!this.integrationState.eddn.enabled) return;
+    if (!INTEGRATIONS.eddn.implemented) return;
+
+    const message = this.buildEddnMessage(event);
+    if (message === null) return;
+
+    /*
+     * The second audit pass, before anything is stored. The builder already
+     * sanitises; this is the last point at which a mistake is still private,
+     * and EDDN is public and permanent.
+     */
+    const problems = auditEddnMessage(message);
+    if (problems.length > 0) {
+      logger.warn('eddn', 'Message withheld by the audit', { problems: problems.join(', ') });
+      return;
+    }
+
+    void this.enqueueEddn(event.source.provenance.eventId, message);
+  }
+
+  /**
+   * Assemble the message, or null when the game has not said enough.
+   *
+   * Every required field has to be known. A position, a system address or a
+   * game build that this run never observed cannot be guessed, and EDDN would
+   * rather have nothing than a record with an invented coordinate in it.
+   */
+  private buildEddnMessage(event: NormalizedEvent): ReturnType<typeof buildEddnJournalMessage> {
+    const s = this.state;
+    if (!isKnown(s.commander) || !isKnown(s.gameVersion) || !isKnown(s.build)) return null;
+    if (!isKnown(s.starSystem) || !isKnown(s.starPos) || !isKnown(s.systemAddress)) return null;
+
+    return buildEddnJournalMessage(
+      event.source.event,
+      event.source.raw as Record<string, unknown>,
+      {
+        // The schema asks for the in-game commander name.
+        uploaderID: s.commander,
+        softwareName: 'EDFM Companion',
+        softwareVersion: COMPANION_VERSION,
+        gameversion: s.gameVersion,
+        gamebuild: s.build,
+      },
+      {
+        starSystem: s.starSystem,
+        starPos: s.starPos,
+        systemAddress: s.systemAddress,
+        // Absent stays absent: the spec forbids substituting false for "the
+        // game did not say".
+        ...(isKnown(s.odyssey) ? { odyssey: s.odyssey } : {}),
+      },
+    );
+  }
+
+  /**
+   * Store a message for sending.
+   *
+   * The id is the journal event id, which is `sourceFile:byteOffset` and
+   * therefore stable across restart and replay. Re-reading a file re-derives the
+   * same id and the insert is dropped, so an observation cannot be published
+   * twice.
+   */
+  private async enqueueEddn(eventId: string, message: unknown): Promise<void> {
+    if (!this.db) return;
+    const now = new Date().toISOString();
+    try {
+      await this.db.execute(
+        `INSERT OR IGNORE INTO integration_queue
+           (id, integration, commander_fid, status, payload, attempts, created_at, updated_at)
+         VALUES ($1, 'eddn', $2, 'queued', $3, 0, $4, $4)`,
+        [eventId, this.discoveryFid, JSON.stringify(message), now],
+      );
+    } catch (err) {
+      logger.warn('eddn', 'Could not queue an observation', { error: String(err) });
+    }
+  }
+
+  /**
+   * Send what is due.
+   *
+   * One message per request: EDDN's upload endpoint takes a single document, so
+   * there is no batching to do. The queue is drained a few at a time rather than
+   * all at once, because a commander who has been offline for an evening should
+   * not open a hundred connections the moment they reconnect.
+   */
+  private async drainEddn(): Promise<void> {
+    if (this.eddnSending || !this.db) return;
+    if (!this.integrationState.eddn.enabled) return;
+
+    this.eddnSending = true;
+    try {
+      const now = new Date().toISOString();
+      const rows = await this.db.select<Array<{ id: string; payload: string; attempts: number }>>(
+        `SELECT id, payload, attempts FROM integration_queue
+          WHERE integration = 'eddn' AND status IN ('queued','retryable')
+            AND (next_attempt_at IS NULL OR next_attempt_at <= $1)
+          ORDER BY created_at
+          LIMIT 10`,
+        [now],
+      );
+
+      for (const row of rows) {
+        const outcome = await this.postToEddn(row.payload);
+        if (outcome === 'accepted') {
+          await this.db.execute(`DELETE FROM integration_queue WHERE integration = 'eddn' AND id = $1`, [
+            row.id,
+          ]);
+          this.eddnSent += 1;
+          await this.recordIntegrationSuccess('eddn');
+        } else if (outcome === 'rejected') {
+          // A schema rejection is identical however often it is sent.
+          await this.db.execute(
+            `UPDATE integration_queue SET status = 'rejected', last_error = $2, updated_at = $3
+              WHERE integration = 'eddn' AND id = $1`,
+            [row.id, 'rejected by EDDN', new Date().toISOString()],
+          );
+        } else {
+          const attempts = row.attempts + 1;
+          const next = new Date(Date.now() + backoffFor(attempts) * 1000).toISOString();
+          await this.db.execute(
+            `UPDATE integration_queue
+                SET status = 'retryable', attempts = $2, next_attempt_at = $3, updated_at = $4
+              WHERE integration = 'eddn' AND id = $1`,
+            [row.id, attempts, next, new Date().toISOString()],
+          );
+        }
+      }
+      if (rows.length > 0) this.notify();
+    } catch (err) {
+      logger.warn('eddn', 'Send failed', { error: String(err) });
+    } finally {
+      this.eddnSending = false;
+    }
+  }
+
+  private eddnSent = 0;
+
+  /**
+   * One upload.
+   *
+   * EDDN answers `200` for accepted and `400` for a schema rejection. Anything
+   * else -- a gateway, a timeout, a 5xx -- is the network rather than the
+   * message, so it is retried.
+   */
+  private async postToEddn(payload: string): Promise<'accepted' | 'rejected' | 'retry'> {
+    try {
+      const { fetch: tauriFetch } = await import('@tauri-apps/plugin-http');
+      const response = await tauriFetch(EDDN_UPLOAD_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: payload,
+      });
+      if (response.status === 200) return 'accepted';
+      const verdict = classifyHttp(response.status);
+      return verdict.kind === 'permanent' ? 'rejected' : 'retry';
+    } catch {
+      // No response at all: the network, not the message.
+      return 'retry';
+    }
+  }
+
+  /* --------------------------------------- rebuilding activity history */
+
+  private historyRebuilding = false;
+  private historyCancelled = false;
+
+  /**
+   * Rebuild the local Activity Journal from every journal file on disk.
+   *
+   * Needed because the Activity Journal only ever saw events from the moment
+   * the feature existed. Live ingest resumes from a single `(file, offset)`
+   * checkpoint and never looks back, so activity from before that point was
+   * never recorded at all -- there was nothing locally to back-fill *from*. A
+   * backfill without this would faithfully upload an empty history.
+   *
+   * Safe to run repeatedly. `replayFile` reproduces byte-identical `eventId`s,
+   * the entry id *is* that event id, and the insert is `INSERT OR IGNORE`, so a
+   * second pass writes nothing new.
+   *
+   * **It does not touch the live checkpoint.** That cursor drives current
+   * commander state; moving it backwards here would replay months of state
+   * transitions over the live session.
+   *
+   * Deliberately NOT in the sync section. Replay is the one path here that
+   * handles raw journal events, and the source guards over that section assert
+   * that the thing which talks to EDFM never touches one. Keeping this outside
+   * is what lets those guards stay honest -- and nothing here sends anything.
+   */
+  readonly rebuildActivityHistory = async (
+    onProgress?: (done: number, total: number) => void,
+  ): Promise<{ filesRead: number; entriesAdded: number; failed: number }> => {
+    const empty = { filesRead: 0, entriesAdded: 0, failed: 0 };
+    if (this.historyRebuilding) return empty;
+
+    /*
+     * The commander this rebuild is for. Entries are attributed to whoever the
+     * journal says was playing, and only theirs are kept: writing another
+     * commander's history into the table on their behalf is work nobody asked
+     * for, and they can rebuild their own.
+     */
+    const fid = this.discoveryFid;
+    const dir = this.directory;
+    if (fid === null || dir === null) return empty;
+
+    this.historyRebuilding = true;
+    this.historyCancelled = false;
+    this.notify();
+
+    let filesRead = 0;
+    let entriesAdded = 0;
+    let failed = 0;
+
+    try {
+      const files = (await listJournalFiles(dir)).filter((f) => f.sizeBytes > 0);
+
+      /*
+       * A fresh engine, not the live one. The live engine holds current
+       * commander state; pushing four months of historical events through it
+       * would leave the app believing the commander is wherever they were in
+       * June. One engine across all files, as live ingest also spans files.
+       */
+      const engine = new ActivityEngine({ commanderFid: null });
+
+      for (const file of files) {
+        if (this.historyCancelled) break;
+        try {
+          const replayed = await replayFile(file.fullPath);
+          const produced: ActivityEntry[] = [];
+          for (const event of replayed.events) {
+            /*
+             * The engine produces nothing at all until it has a commander, and
+             * the journal is the only thing that knows which one. `provenance`
+             * carries the FID from the governing Commander/LoadGame event, so
+             * history is attributed to whoever actually played it rather than
+             * to whoever happens to be signed in now.
+             */
+            const seen = event.source.provenance.fid;
+            if (seen !== null) engine.setCommander(seen);
+            produced.push(...engine.observe(event));
+          }
+
+          const mine = produced.filter((e) => e.commanderFid === fid);
+          if (mine.length > 0) {
+            await this.saveActivity(mine);
+            entriesAdded += mine.length;
+          }
+        } catch (err) {
+          // One unreadable file must not abandon the rest of the history.
+          failed += 1;
+          logger.warn('activity', 'Could not replay a file', {
+            file: file.fileName,
+            error: String(err),
+          });
+        }
+        filesRead += 1;
+        onProgress?.(filesRead, files.length);
+      }
+
+      await this.loadActivity(fid);
+      logger.info('activity', 'History rebuilt', { filesRead, entriesAdded, failed });
+      return { filesRead, entriesAdded, failed };
+    } finally {
+      this.historyRebuilding = false;
+      this.historyCancelled = false;
+      this.notify();
+    }
+  };
+
+  /** Stop a running rebuild at the next file boundary. */
+  readonly cancelActivityRebuild = (): void => {
+    this.historyCancelled = true;
+    this.notify();
+  };
+
+  /* ----------------------------------------------- EDFM journal sync */
+
+  private journalState: JournalConnectionState = 'not-connected';
+  private journalMessage: string | null = null;
+  private journalServer: JournalStatus | null = null;
+  private journalLastSuccess: string | null = null;
+  private journalLastAttempt: string | null = null;
+  private journalPending = 0;
+  private journalFailed = 0;
+  private journalWatermark: string | null = null;
+  private journalSyncing = false;
+
+  /**
+   * The connection state, read in full.
+   *
+   * `syncJournalNow` reassigns the field behind an await, which the compiler
+   * cannot see: it narrows `this.journalState` from the guards a caller made
+   * earlier and then rejects a later check against the states it thinks were
+   * excluded. Reading through here is a reference with no narrowing history, so
+   * the declared type survives -- which is the truth, since the call changed it.
+   */
+  private get currentJournalState(): JournalConnectionState {
+    return this.journalState;
+  }
+
+  /** Settings keys are per commander: two people share a machine, not an account. */
+  private journalKey(suffix: string): string {
+    return `edfm-journal.${suffix}.${this.discoveryFid ?? 'unknown'}`;
+  }
+
+  private async loadJournalSync(): Promise<void> {
+    /*
+     * Only read the per-commander settings once there is a commander. At
+     * startup the FID is still unknown, and reading under a placeholder key
+     * returns nothing while looking like a real answer.
+     */
+    if (this.discoveryFid !== null) {
+      this.journalWatermark = await this.getSetting(this.journalKey('watermark'));
+      this.journalLastSuccess = await this.getSetting(this.journalKey('lastSuccess'));
+    }
+
+    const hasCredential = await credentialPresent('edfm-journal');
+    this.journalState = hasCredential ? 'connected' : 'not-connected';
+    await this.refreshJournalCounts();
+    this.notify();
+
+    // Verify the stored token is still good, without blocking startup.
+    if (hasCredential) void this.checkJournalStatus();
+  }
+
+  /**
+   * Ask `/status` whether the connection still works.
+   *
+   * Separate from syncing because the answers differ: a revoked token must stop
+   * uploads and say so, while an unreachable server must not — the entries are
+   * kept and the local journal carries on regardless.
+   */
+  private async checkJournalStatus(): Promise<boolean> {
+    this.journalLastAttempt = new Date().toISOString();
+    try {
+      const raw = await invoke<{
+        status: number;
+        body: string;
+        retryAfterSeconds: number | null;
+        transport_error: string | null;
+      }>('edfm_journal_status');
+
+      if (raw.transport_error !== null || raw.status === 0) {
+        this.journalState = 'unavailable';
+        this.journalMessage = 'EDFM could not be reached. Your entries are kept and will sync later.';
+        this.notify();
+        return false;
+      }
+
+      let body: unknown = null;
+      try {
+        body = JSON.parse(raw.body);
+      } catch {
+        body = null;
+      }
+
+      if (raw.status === 200) {
+        const status = parseStatus(body);
+        if (status === null) {
+          // §27: a response this cannot read is not a working connection.
+          this.journalState = 'unavailable';
+          this.journalMessage = 'EDFM replied with something this app could not read.';
+          this.notify();
+          return false;
+        }
+        this.journalServer = status;
+        this.journalState = 'connected';
+        this.journalMessage = null;
+        this.notify();
+        return true;
+      }
+
+      const failure = classifyFailure(raw.status, body, raw.retryAfterSeconds ?? undefined);
+      this.journalState =
+        failure.kind === 'invalid-credential' || failure.kind === 'profile-missing'
+          ? 'needs-attention'
+          : 'unavailable';
+      this.journalMessage = failure.message;
+      this.notify();
+      return false;
+    } catch (err) {
+      this.journalState = 'unavailable';
+      this.journalMessage = 'EDFM could not be reached.';
+      logger.warn('edfm-journal', 'Status check failed', { error: String(err) });
+      this.notify();
+      return false;
+    }
+  }
+
+  /**
+   * Store a token and verify it before claiming to be connected.
+   *
+   * Order matters, and so does the rollback: the credential is stored first
+   * because the request is made in Rust and reads it from the store, but an
+   * unusable credential is removed again rather than left behind looking
+   * configured. §6 asks for exactly that.
+   *
+   * Returns null on success, or a sentence explaining the failure.
+   */
+  readonly connectJournalSync = async (token: string): Promise<string | null> => {
+    const trimmed = token.trim();
+    if (trimmed.length === 0) return 'Paste the token generated on edfieldmanual.com.';
+    if (!looksLikeJournalToken(trimmed)) {
+      // Caught locally so an obvious paste accident is a clear message rather
+      // than a 401 the commander has to interpret.
+      return 'That does not look like a journal sync token. It begins with edfmj_v1_.';
+    }
+
+    try {
+      await credentialSet('edfm-journal', trimmed);
+    } catch (err) {
+      logger.warn('edfm-journal', 'Could not store the token', { error: String(err) });
+      return 'The token could not be saved to the Windows Credential Manager.';
+    }
+
+    const ok = await this.checkJournalStatus();
+    if (!ok) {
+      // Unusable: take it back out rather than leaving a credential that looks
+      // configured and never works.
+      try {
+        await credentialClear('edfm-journal');
+      } catch {
+        // Leaving it is survivable; the connection already reads as unusable.
+      }
+      this.journalState = 'not-connected';
+      await this.loadIntegrationState();
+      return this.journalMessage ?? 'The token could not be verified.';
+    }
+
+    // The Phase 1 boundary starts now. Nothing from before this is uploaded.
+    this.journalWatermark = new Date().toISOString();
+    await this.setSetting(this.journalKey('watermark'), this.journalWatermark);
+    await this.setSetting(`integration.edfm-journal.${this.discoveryFid}.enabled`, 'true');
+    await this.loadIntegrationState();
+    this.notify();
+    return null;
+  };
+
+  /**
+   * Forget the local credential.
+   *
+   * **This does not revoke the token on the website**, and the UI says so. Only
+   * EDFM can revoke it, so claiming otherwise would leave a commander believing
+   * a credential was dead when it was not.
+   *
+   * The local Activity Journal and the queue survive: disconnecting is not a
+   * reason to lose a record of what they did.
+   */
+  readonly disconnectJournalSync = async (): Promise<void> => {
+    try {
+      await credentialClear('edfm-journal');
+    } catch (err) {
+      logger.warn('edfm-journal', 'Could not clear the token', { error: String(err) });
+    }
+    this.journalState = 'not-connected';
+    this.journalServer = null;
+    this.journalMessage = null;
+    if (this.discoveryFid !== null) {
+      await this.setSetting(`integration.edfm-journal.${this.discoveryFid}.enabled`, 'false');
+    }
+    await this.loadIntegrationState();
+    this.notify();
+  };
+
+  /**
+   * Queue an entry, if Phase 1 covers it.
+   *
+   * Called as entries are recorded. Never awaited by ingest: the field journal
+   * is a record, and syncing it must not gate reading the game's.
+   */
+  private async enqueueJournalEntries(entries: readonly ActivityEntry[]): Promise<void> {
+    if (!this.db || this.discoveryFid === null) return;
+    if (this.journalState === 'not-connected') return;
+
+    const eligible = entries.filter((e) => isWithinPhaseOne(e.occurredAt, this.journalWatermark));
+    if (eligible.length === 0) return;
+
+    const now = new Date().toISOString();
+    try {
+      for (const entry of eligible) {
+        // The queue id IS the entry id: measured compatible with the server's
+        // stable-client-id rules, so a retry cannot create a duplicate.
+        await this.db.execute(
+          `INSERT OR IGNORE INTO integration_queue
+             (id, integration, commander_fid, status, payload, attempts, created_at, updated_at)
+           VALUES ($1, 'edfm-journal', $2, 'queued', $3, 0, $4, $4)`,
+          [entry.id, this.discoveryFid, JSON.stringify({ entryId: entry.id }), now],
+        );
+      }
+      await this.refreshJournalCounts();
+    } catch (err) {
+      logger.warn('edfm-journal', 'Could not queue entries', { error: String(err) });
+    }
+  }
+
+  /**
+   * Look entries up by id, from the table rather than the screen's window.
+   *
+   * Chunked, because SQLite has a bound-parameter limit and a backfill batch
+   * can ask for a hundred ids at once.
+   */
+  private async loadActivityByIds(
+    fid: string,
+    ids: readonly string[],
+  ): Promise<readonly ActivityEntry[]> {
+    if (!this.db || ids.length === 0) return [];
+    const out: ActivityEntry[] = [];
+    const CHUNK = 100;
+    for (let i = 0; i < ids.length; i += CHUNK) {
+      const slice = ids.slice(i, i + CHUNK);
+      const holes = slice.map((_, n) => `$${n + 2}`).join(',');
+      try {
+        const rows = await this.db.select<ActivityRow[]>(
+          `SELECT * FROM activity_entries
+            WHERE commander_fid = $1 AND id IN (${holes})`,
+          [fid, ...slice],
+        );
+        out.push(...rows.map(activityFromRow));
+      } catch (err) {
+        logger.warn('db', 'Could not read activity by id', { error: String(err) });
+      }
+    }
+    return out;
+  }
+
+  /* ------------------------------------------------------------- backfill */
+
+  /**
+   * What a backfill would send, before sending any of it.
+   *
+   * Automatic sync uploads nothing from before the moment it was switched on,
+   * because a back catalogue is a decision with weight: how much, how far back,
+   * and what becomes visible. So this answers the question first and sends
+   * nothing -- the commander sees the count and the span, and chooses.
+   *
+   * Counts only what is not already queued or sent, so the number shrinks as a
+   * backfill progresses rather than describing the same work twice.
+   */
+  readonly journalBackfillPreview = async (): Promise<{
+    entries: number;
+    oldest: string | null;
+    newest: string | null;
+  }> => {
+    const fid = this.discoveryFid;
+    if (!this.db || fid === null) return { entries: 0, oldest: null, newest: null };
+    const holes = SYNCABLE_SUBTYPES.map((_, i) => `$${i + 2}`).join(',');
+    try {
+      const rows = await this.db.select<
+        Array<{ n: number; oldest: string | null; newest: string | null }>
+      >(
+        `SELECT COUNT(*) AS n, MIN(occurred_at) AS oldest, MAX(occurred_at) AS newest
+           FROM activity_entries a
+          WHERE a.commander_fid = $1
+            AND a.subtype IN (${holes})
+            AND a.synced_at IS NULL
+            AND NOT EXISTS (
+              SELECT 1 FROM integration_queue q
+               WHERE q.integration = 'edfm-journal'
+                 AND q.id = a.id
+                 AND q.commander_fid = a.commander_fid
+            )`,
+        [fid, ...SYNCABLE_SUBTYPES],
+      );
+      return {
+        entries: Number(rows[0]?.n ?? 0),
+        oldest: rows[0]?.oldest ?? null,
+        newest: rows[0]?.newest ?? null,
+      };
+    } catch (err) {
+      logger.warn('edfm-journal', 'Could not preview the backfill', { error: String(err) });
+      return { entries: 0, oldest: null, newest: null };
+    }
+  };
+
+  /**
+   * Queue everything not yet sent, however old, and then send it.
+   *
+   * This is the Phase 2 action the watermark was holding back, so it runs only
+   * when the commander asks for it. The watermark itself is left alone: it
+   * still governs what new activity is queued automatically, and this is a
+   * one-off decision rather than a change of policy.
+   */
+  readonly backfillJournalSync = async (
+    onProgress?: (sent: number, total: number) => void,
+  ): Promise<string | null> => {
+    const fid = this.discoveryFid;
+    if (!this.db || fid === null) return 'No commander is loaded yet.';
+    if (this.journalState === 'not-connected') return 'Connect your journal sync token first.';
+    if (this.journalBackfilling) return null;
+
+    this.journalBackfilling = true;
+    this.journalCancelled = false;
+    this.notify();
+
+    const holes = SYNCABLE_SUBTYPES.map((_, i) => `$${i + 3}`).join(',');
+
+    try {
+      const now = new Date().toISOString();
+      /*
+       * Queued in one statement rather than row by row. The queue id is the
+       * entry id, so `INSERT OR IGNORE` makes this safe to run twice, and
+       * anything already queued or sent is left exactly as it was.
+       */
+      await this.db.execute(
+        `INSERT OR IGNORE INTO integration_queue
+           (id, integration, commander_fid, status, payload, attempts, created_at, updated_at)
+         SELECT a.id, 'edfm-journal', a.commander_fid, 'queued',
+                json_object('entryId', a.id), 0, $2, $2
+           FROM activity_entries a
+          WHERE a.commander_fid = $1
+            AND a.subtype IN (${holes})
+            AND a.synced_at IS NULL`,
+        [fid, now, ...SYNCABLE_SUBTYPES],
+      );
+      await this.refreshJournalCounts();
+      this.notify();
+
+      const total = this.journalPending;
+      let sent = 0;
+
+      /*
+       * One batch at a time, with a pause between them. A backfill is the only
+       * time this client sends sustained traffic, so it is paced deliberately
+       * rather than looping as fast as the server will answer.
+       */
+      while (!this.journalCancelled) {
+        const before = this.journalPending;
+        if (before === 0) break;
+
+        await this.syncJournalNow();
+
+        const state = this.currentJournalState;
+        if (state === 'needs-attention' || state === 'not-connected') {
+          return this.journalMessage ?? 'Sync stopped: the connection needs attention.';
+        }
+
+        await this.refreshJournalCounts();
+        if (this.journalPending >= before) {
+          /*
+           * No progress. Either everything left is waiting on a backoff or the
+           * server is refusing: either way, stop rather than spin. The queue is
+           * durable, so the next attempt resumes from here.
+           */
+          return this.journalPending > 0
+            ? 'Some entries are waiting to retry. They will go on the next sync.'
+            : null;
+        }
+
+        sent += before - this.journalPending;
+        onProgress?.(sent, total);
+        await new Promise((r) => setTimeout(r, BACKFILL_PAUSE_MS));
+      }
+
+      return this.journalCancelled ? 'Stopped. Everything still queued will be sent later.' : null;
+    } catch (err) {
+      logger.warn('edfm-journal', 'Backfill failed', { error: String(err) });
+      return 'The backfill could not be completed. Nothing was lost.';
+    } finally {
+      this.journalBackfilling = false;
+      await this.refreshJournalCounts();
+      this.notify();
+    }
+  };
+
+  /** Stop a running backfill at the end of the batch in flight. */
+  readonly cancelJournalBackfill = (): void => {
+    this.journalCancelled = true;
+    this.notify();
+  };
+
+  private journalBackfilling = false;
+  private journalCancelled = false;
+
+  private async refreshJournalCounts(): Promise<void> {
+    if (!this.db || this.discoveryFid === null) {
+      this.journalPending = 0;
+      this.journalFailed = 0;
+      return;
+    }
+    try {
+      const rows = await this.db.select<Array<{ status: string; n: number }>>(
+        `SELECT status, COUNT(*) AS n FROM integration_queue
+          WHERE integration = 'edfm-journal' AND commander_fid = $1 GROUP BY status`,
+        [this.discoveryFid],
+      );
+      const at = (s: string) => Number(rows.find((r) => r.status === s)?.n ?? 0);
+      this.journalPending = at('queued') + at('retryable');
+      this.journalFailed = at('rejected');
+    } catch {
+      // Counts are informational; a failed read must not break the screen.
+    }
+  }
+
+  /**
+   * Push what is waiting.
+   *
+   * One batch per call. The queue is durable, so the rest simply waits rather
+   * than being held in memory, and a failure mid-way loses nothing.
+   */
+  readonly syncJournalNow = async (): Promise<void> => {
+    if (this.journalSyncing) return;
+    if (!this.db || this.discoveryFid === null) return;
+    if (this.journalState === 'not-connected' || this.journalState === 'needs-attention') return;
+
+    this.journalSyncing = true;
+    this.journalState = 'syncing';
+    this.journalLastAttempt = new Date().toISOString();
+    this.notify();
+
+    try {
+      await this.runJournalBatch();
+    } catch (err) {
+      logger.warn('edfm-journal', 'Sync failed', { error: String(err) });
+      this.journalState = 'unavailable';
+      this.journalMessage = 'The sync could not be completed. Your entries are kept.';
+    } finally {
+      this.journalSyncing = false;
+      await this.refreshJournalCounts();
+      this.notify();
+    }
+  };
+
+  private async runJournalBatch(): Promise<void> {
+    const fid = this.discoveryFid;
+    if (!this.db || fid === null) return;
+
+    const limits = this.journalServer?.limits;
+    const now = new Date().toISOString();
+
+    // Commander-scoped, and only rows actually due.
+    const rows = await this.db.select<Array<{ id: string }>>(
+      `SELECT id FROM integration_queue
+        WHERE integration = 'edfm-journal' AND commander_fid = $1
+          AND status IN ('queued','retryable')
+          AND (next_attempt_at IS NULL OR next_attempt_at <= $2)
+        ORDER BY created_at
+        LIMIT $3`,
+      [fid, now, limits?.maxBatchEntries ?? 100],
+    );
+    if (rows.length === 0) {
+      this.journalState = 'connected';
+      return;
+    }
+
+    const wanted = new Set(rows.map((r) => r.id));
+
+    /*
+     * Read from the table, not from `activityEntries`.
+     *
+     * That list is the most recent 500 rows for the screen. Resolving queued
+     * ids against it meant anything older was "not found" and was deleted from
+     * the queue as unsendable -- which made a history backfill impossible: the
+     * rows were discarded before they could be sent. The queue is durable, so
+     * its entries must be looked up somewhere equally durable.
+     */
+    const entries = await this.loadActivityByIds(fid, [...wanted]);
+
+    // An entry whose row exists but is no longer in memory is dropped from the
+    // queue rather than retried forever: there is nothing left to send.
+    const found = new Set(entries.map((e) => e.id));
+    for (const id of wanted) {
+      if (!found.has(id)) {
+        await this.db.execute(
+          `DELETE FROM integration_queue WHERE integration = 'edfm-journal' AND id = $1 AND commander_fid = $2`,
+          [id, fid],
+        );
+      }
+    }
+    if (entries.length === 0) return;
+
+    const { batch, skipped } = buildBatch(entries, COMPANION_VERSION, {
+      maxEntries: limits?.maxBatchEntries,
+      maxRequestBytes: limits?.maxRequestBytes,
+      maxEntryDataBytes: limits?.maxEntryDataBytes,
+    });
+
+    // Entries this client refuses to send will never become sendable.
+    for (const s of skipped) {
+      await this.markJournalRejected(s.id, s.reason);
+    }
+    if (batch === null) return;
+
+    const sentIds = batch.entries.map((e) => e.id);
+    const raw = await invoke<{
+      status: number;
+      body: string;
+      retryAfterSeconds: number | null;
+      transport_error: string | null;
+    }>('edfm_journal_batch', { body: JSON.stringify(batch) });
+
+    if (raw.transport_error !== null || raw.status === 0) {
+      this.journalState = 'unavailable';
+      this.journalMessage = 'EDFM could not be reached. Your entries are kept and will sync later.';
+      await this.backoffJournal(sentIds);
+      return;
+    }
+
+    let body: unknown = null;
+    try {
+      body = JSON.parse(raw.body);
+    } catch {
+      body = null;
+    }
+
+    if (raw.status !== 200 && raw.status !== 207) {
+      const failure = classifyFailure(raw.status, body, raw.retryAfterSeconds ?? undefined);
+      this.journalMessage = failure.message;
+      if (failure.kind === 'invalid-credential' || failure.kind === 'profile-missing') {
+        // Stop. Repeating an authenticated request with a dead token is both
+        // useless and rude to the server.
+        this.journalState = 'needs-attention';
+        return;
+      }
+      this.journalState = 'unavailable';
+      if (failure.retryable) await this.backoffJournal(sentIds, failure.retryAfterSeconds);
+      else for (const id of sentIds) await this.markJournalRejected(id, failure.kind);
+      return;
+    }
+
+    const outcome = parseBatchOutcome(body);
+    if (outcome === null) {
+      /*
+       * §27: nothing is marked synchronised on a status code. A 200 whose body
+       * cannot be read acknowledged nothing, so everything stays queued.
+       */
+      this.journalState = 'unavailable';
+      this.journalMessage = 'EDFM replied with something this app could not read. Nothing was marked as synced.';
+      await this.backoffJournal(sentIds);
+      return;
+    }
+
+    const applied = applyBatchOutcome(sentIds, outcome);
+
+    const acknowledgedAt = new Date().toISOString();
+    for (const id of applied.acknowledged) {
+      /*
+       * Record the acknowledgement on the entry BEFORE removing the queue row.
+       * The queue is not an archive, so a finished row is deleted -- but then
+       * nothing remembered that EDFM had it, and a second backfill re-sent the
+       * whole history. If the delete fails after this, the worst case is a row
+       * that is queued and already marked sent, which the next pass drops.
+       */
+      await this.db.execute(
+        `UPDATE activity_entries SET synced_at = $3
+          WHERE id = $1 AND commander_fid = $2 AND synced_at IS NULL`,
+        [id, fid, acknowledgedAt],
+      );
+      await this.db.execute(
+        `DELETE FROM integration_queue WHERE integration = 'edfm-journal' AND id = $1 AND commander_fid = $2`,
+        [id, fid],
+      );
+    }
+    for (const row of applied.permanent) {
+      await this.markJournalRejected(row.id, row.reason);
+    }
+    if (applied.retryable.length > 0 || applied.unanswered.length > 0) {
+      await this.backoffJournal([...applied.retryable, ...applied.unanswered]);
+    }
+
+    if (applied.acknowledged.length > 0) {
+      this.journalLastSuccess = new Date().toISOString();
+      await this.setSetting(this.journalKey('lastSuccess'), this.journalLastSuccess);
+    }
+
+    this.journalState = 'connected';
+    this.journalMessage =
+      applied.permanent.length > 0 ? 'Some entries could not be synced and will not be retried.' : null;
+  }
+
+  private async markJournalRejected(id: string, reason: string): Promise<void> {
+    if (!this.db || this.discoveryFid === null) return;
+    await this.db.execute(
+      `UPDATE integration_queue SET status = 'rejected', last_error = $3, updated_at = $4
+        WHERE integration = 'edfm-journal' AND id = $1 AND commander_fid = $2`,
+      [id, this.discoveryFid, reason.slice(0, 200), new Date().toISOString()],
+    );
+  }
+
+  /**
+   * Put work back with a wait.
+   *
+   * The delay is stored on the row rather than held in a timer, so it survives
+   * a restart instead of collapsing into a retry storm.
+   */
+  private async backoffJournal(ids: readonly string[], seconds?: number): Promise<void> {
+    if (!this.db || this.discoveryFid === null || ids.length === 0) return;
+    const now = new Date();
+    for (const id of ids) {
+      const rows = await this.db.select<Array<{ attempts: number }>>(
+        `SELECT attempts FROM integration_queue WHERE integration = 'edfm-journal' AND id = $1 AND commander_fid = $2`,
+        [id, this.discoveryFid],
+      );
+      const attempts = Number(rows[0]?.attempts ?? 0) + 1;
+      const wait = seconds ?? backoffFor(attempts);
+      const next = new Date(now.getTime() + wait * 1000).toISOString();
+      await this.db.execute(
+        `UPDATE integration_queue
+            SET status = 'retryable', attempts = $3, next_attempt_at = $4, updated_at = $5
+          WHERE integration = 'edfm-journal' AND id = $1 AND commander_fid = $2`,
+        [id, this.discoveryFid, attempts, next, now.toISOString()],
+      );
+    }
+  }
+
+  private journalSyncView(): JournalSyncView {
+    return {
+      state: this.journalState,
+      hasCredential: this.integrationState['edfm-journal'].hasCredential,
+      pending: this.journalPending,
+      failed: this.journalFailed,
+      lastSuccessAt: this.journalLastSuccess,
+      lastAttemptAt: this.journalLastAttempt,
+      message: this.journalMessage,
+      server: this.journalServer,
+      syncingSince: this.journalWatermark,
+      backfilling: this.journalBackfilling,
+      rebuilding: this.historyRebuilding,
+    };
+  }
+
   /* ------------------------------------------------------- screenshots */
 
   private screenshotHotkey: string | null = null;
@@ -608,6 +2153,9 @@ export class Companion {
   private captureRepliesBound = false;
   private screenshotList: ScreenshotRecord[] = [];
   private screenshotError: string | null = null;
+  /** Rebuilt on every catalog read; never persisted, because it is not a fact
+      about the screenshot but about the disk at this moment. */
+  private missingScreenshots: ReadonlySet<string> = new Set();
 
   /** Newest first, and bounded: the browser pages rather than holding everything. */
   private static readonly SCREENSHOTS_IN_MEMORY = 300;
@@ -831,7 +2379,7 @@ export class Companion {
    * Show the form over the game.
    *
    * A separate always-on-top window, positioned on the game's monitor. In
-   * Borderless this draws over Elite, which keeps rendering behind it """ + DASH + """ the
+   * Borderless this draws over Elite, which keeps rendering behind it — the
    * commander answers one question without leaving the cockpit view.
    *
    * The overlay is **not** touched. It stays click-through throughout: making it
@@ -1126,12 +2674,70 @@ export class Companion {
         [this.discoveryFid, Companion.SCREENSHOTS_IN_MEMORY],
       );
       this.screenshotList = rows.map((r) => screenshotFromRow(r));
+      await this.checkScreenshotFiles();
     } catch (err) {
       logger.warn('screenshot', 'Could not read the catalog', { error: String(err) });
       this.screenshotList = [];
     }
     this.notify();
   }
+
+  /**
+   * Find out which catalogued images are still on disk.
+   *
+   * One batched call rather than one per row: a commander with a few hundred
+   * screenshots should not wait on a few hundred round trips to open the screen.
+   *
+   * A failure to ask leaves everything marked present. Showing rows as missing
+   * because the check itself broke would be worse than showing a stale list.
+   */
+  private async checkScreenshotFiles(): Promise<void> {
+    if (this.screenshotList.length === 0) {
+      this.missingScreenshots = new Set();
+      return;
+    }
+    try {
+      const paths = this.screenshotList.map((r) => r.filePath);
+      const present = await invoke<boolean[]>('paths_exist', { paths });
+      const gone = new Set<string>();
+      this.screenshotList.forEach((row, i) => {
+        if (present[i] === false) gone.add(row.id);
+      });
+      this.missingScreenshots = gone;
+      this.notify();
+    } catch (err) {
+      logger.warn('screenshot', 'Could not check which images are still there', {
+        error: String(err),
+      });
+    }
+  }
+
+  /**
+   * Forget every entry whose image is gone.
+   *
+   * Deliberately a separate, explicit action rather than something that happens
+   * on load. The rows carry writing the commander did, and a drive that is
+   * merely unplugged today will be back tomorrow.
+   */
+  readonly removeMissingFromCatalog = async (): Promise<void> => {
+    const gone = [...this.missingScreenshots];
+    if (gone.length === 0 || !this.db || this.discoveryFid === null) return;
+
+    try {
+      for (const id of gone) {
+        await this.db.execute('DELETE FROM screenshots WHERE id = $1 AND commander_fid = $2', [
+          id,
+          this.discoveryFid,
+        ]);
+      }
+      const removed = new Set(gone);
+      this.screenshotList = this.screenshotList.filter((r) => !removed.has(r.id));
+      this.missingScreenshots = new Set();
+      this.notify();
+    } catch (err) {
+      logger.warn('screenshot', 'Could not remove the missing entries', { error: String(err) });
+    }
+  };
 
   readonly updateScreenshot = async (
     id: string,
@@ -1210,6 +2816,28 @@ export class Companion {
     await this.removeScreenshotFromCatalog(id);
   };
 
+  /** Re-check the folder, for the browser's refresh. */
+  readonly refreshScreenshots = async (): Promise<void> => {
+    await this.loadScreenshots();
+    await this.loadJournalSync();
+  };
+
+  /** Stored queue facts, with the switch positions as they are right now. */
+  private liveSharingState(): Partial<Record<IntegrationId, SharingInput>> {
+    const merged: Partial<Record<IntegrationId, SharingInput>> = {};
+    for (const id of Object.keys(this.integrationState) as IntegrationId[]) {
+      const stored = this.sharingState[id];
+      merged[id] = {
+        queue: stored?.queue ?? EMPTY_QUEUE,
+        lastSuccessAt: stored?.lastSuccessAt ?? null,
+        lastError: stored?.lastError ?? null,
+        enabled: this.integrationState[id].enabled,
+        hasCredential: this.integrationState[id].hasCredential,
+      };
+    }
+    return merged;
+  }
+
   private screenshotView(): ScreenshotView {
     return {
       hotkey: this.screenshotHotkey,
@@ -1218,6 +2846,8 @@ export class Companion {
       recent: this.screenshotList,
       draft: this.screenshotDraft,
       draftInMainWindow: this.draftInMainWindow,
+      missing: this.missingScreenshots,
+      removeMissingFromCatalog: this.removeMissingFromCatalog,
       lastError: this.screenshotError,
     };
   }
@@ -1249,7 +2879,7 @@ export class Companion {
     eddn: { enabled: false, hasCredential: false },
     edsm: { enabled: false, hasCredential: false },
     inara: { enabled: false, hasCredential: false },
-    edastro: { enabled: false, hasCredential: false },
+    'edfm-journal': { enabled: false, hasCredential: false },
   };
 
   /**
@@ -1279,6 +2909,53 @@ export class Companion {
    * reaching for the singleton. Refuses an integration that is not built, so a
    * UI bug cannot make one appear active.
    */
+  /**
+   * Store a key for an integration that needs one.
+   *
+   * Written straight to the Windows Credential Manager. The value is not kept
+   * anywhere in this class: the authenticated request reads it in Rust, so the
+   * only copy in the process is the argument, and it goes out of scope here.
+   */
+  readonly setIntegrationCredential = async (
+    id: IntegrationId,
+    secret: string,
+  ): Promise<string | null> => {
+    const trimmed = secret.trim();
+    if (trimmed.length === 0) return 'Paste the key before saving.';
+    try {
+      await credentialSet(id, trimmed);
+    } catch (err) {
+      // The error is logged without the value, which `credentials.rs` also
+      // guarantees on its side.
+      logger.warn(id, 'Could not store the key', { error: String(err) });
+      return 'The key could not be saved to the Windows Credential Manager.';
+    }
+    await this.loadIntegrationState();
+    this.notify();
+    return null;
+  };
+
+  readonly clearIntegrationCredential = async (id: IntegrationId): Promise<void> => {
+    try {
+      await credentialClear(id);
+    } catch (err) {
+      logger.warn(id, 'Could not clear the key', { error: String(err) });
+    }
+    /*
+     * Switched off at the same time. An integration that needs a key and has
+     * none cannot send, so leaving the switch on would show an enabled service
+     * that silently does nothing.
+     */
+    this.integrationState = {
+      ...this.integrationState,
+      [id]: { enabled: false, hasCredential: false },
+    };
+    const fid = this.discoveryFid;
+    if (fid !== null) await this.setSetting(`integration.${id}.${fid}.enabled`, 'false');
+    await this.loadIntegrationState();
+    this.notify();
+  };
+
   readonly setIntegrationEnabled = async (id: IntegrationId, enabled: boolean): Promise<void> => {
     if (!INTEGRATIONS[id]?.implemented) return;
     this.integrationState = {
@@ -1655,9 +3332,20 @@ export class Companion {
         appearance: this.appearance,
         integrations: this.integrationState,
         setIntegrationEnabled: this.setIntegrationEnabled,
+        setIntegrationCredential: this.setIntegrationCredential,
+        clearIntegrationCredential: this.clearIntegrationCredential,
         sharing: sharingAudit({
           descriptors: integrationsList(),
-          state: this.sharingState,
+          /*
+           * Switch positions come from the live state, not the cached row.
+           *
+           * `sharingState` is a database read, refreshed on its own schedule.
+           * Toggling an integration updated the switch in memory but left the
+           * row stale, so the checkbox snapped straight back — it was bound to
+           * the row. Merging here fixes every such path at once rather than
+           * adding a reload to one of them.
+           */
+          state: this.liveSharingState(),
           commanderName: isKnown(this.state.commander) ? this.state.commander : null,
           commanderFid: this.discoveryFid,
         }),
@@ -1679,6 +3367,15 @@ export class Companion {
         research: this.researchView(),
         plugins: this.pluginView,
         screenshots: this.screenshotView(),
+        journalSync: this.journalSyncView(),
+        connectJournalSync: this.connectJournalSync,
+        disconnectJournalSync: this.disconnectJournalSync,
+        syncJournalNow: this.syncJournalNow,
+        journalBackfillPreview: this.journalBackfillPreview,
+        backfillJournalSync: this.backfillJournalSync,
+        cancelJournalBackfill: this.cancelJournalBackfill,
+        rebuildActivityHistory: this.rebuildActivityHistory,
+        cancelActivityRebuild: this.cancelActivityRebuild,
         captureScreenshot: this.captureScreenshot,
         saveScreenshot: this.saveScreenshot,
         discardScreenshotDraft: this.discardScreenshotDraft,
@@ -1686,6 +3383,7 @@ export class Companion {
         setScreenshotFolder: this.setScreenshotFolder,
         updateScreenshot: this.updateScreenshot,
         removeScreenshotFromCatalog: this.removeScreenshotFromCatalog,
+        refreshScreenshots: this.refreshScreenshots,
         deleteScreenshotImage: this.deleteScreenshotImage,
         logistics: {
           sites: [...this.sites.values()].sort(
@@ -1920,6 +3618,10 @@ export class Companion {
 
     try {
       await this.engine.start();
+      // Queued observations go out on their own schedule, never on the ingest
+      // path.
+      this.startEddnDrain();
+      this.startEdsmDrain();
       this.connection = 'watching';
       logger.info('journal', 'Watching', { file: this.engine.currentFile });
     } catch (err) {
@@ -2082,6 +3784,9 @@ export class Companion {
         Companion.ACTIVITY_IN_MEMORY,
       );
       void this.saveActivity(activity);
+      // Offered to EDFM if Phase 1 covers them. Never awaited: syncing a record
+      // of the game must not gate reading it.
+      void this.enqueueJournalEntries(activity);
       this.notify();
     }
 
@@ -2122,6 +3827,13 @@ export class Companion {
       );
       this.notify();
     }
+
+    // Offered to EDDN. Returns immediately for all but seven event names, and
+    // queues rather than sends, so the network is never on the ingest path.
+    // Draining happens on its own timer; see `startEddnDrain`.
+    this.observeForEddn(event);
+    this.observeForEdsm(event);
+    this.observeForInara(event);
 
     // Context resolution runs on every event, including the high-frequency ones:
     // a rule may legitimately key on them, and evaluating a dozen declarative
@@ -2529,6 +4241,14 @@ export class Companion {
     await this.loadIntegrationState();
     await this.loadScreenshotSettings();
     await this.loadScreenshots();
+    /*
+     * The journal connection is keyed per commander, and the FID only becomes
+     * known once the game says who is playing — which is after startup. Without
+     * this reload the watermark and last-success were read under an "unknown"
+     * key at launch and never corrected, so a connected account looked
+     * unconfigured and nothing was ever eligible to sync.
+     */
+    await this.loadJournalSync();
 
     logger.info('discovery', 'Commander changed; discovery state swapped', {
       // FIDs identify a person's account; only whether one was present is logged.
@@ -3092,24 +4812,7 @@ export class Companion {
   private async loadActivity(fid: string): Promise<void> {
     if (!this.db) return;
     try {
-      const rows = await this.db.select<
-        Array<{
-          id: string;
-          commander_fid: string;
-          occurred_at: string;
-          category: string;
-          subtype: string;
-          system_name: string | null;
-          system_address: number | null;
-          body_name: string | null;
-          body_id: number | null;
-          location_name: string | null;
-          title: string;
-          detail: string | null;
-          data: string;
-          sources: string;
-        }>
-      >(
+      const rows = await this.db.select<ActivityRow[]>(
         `SELECT * FROM activity_entries
           WHERE commander_fid = $1
           ORDER BY occurred_at DESC
@@ -3117,22 +4820,7 @@ export class Companion {
         [fid, Companion.ACTIVITY_IN_MEMORY],
       );
 
-      this.activityEntries = rows.map((r) => ({
-        id: r.id,
-        commanderFid: r.commander_fid,
-        occurredAt: r.occurred_at,
-        category: r.category as ActivityEntry['category'],
-        subtype: r.subtype,
-        systemName: r.system_name,
-        systemAddress: r.system_address,
-        bodyName: r.body_name,
-        bodyId: r.body_id,
-        locationName: r.location_name,
-        title: r.title,
-        detail: r.detail,
-        data: safeJsonObject(r.data),
-        sources: safeJsonStrings(r.sources),
-      }));
+      this.activityEntries = rows.map(activityFromRow);
       this.notify();
     } catch (err) {
       logger.warn('db', 'Could not load activity', { error: String(err) });

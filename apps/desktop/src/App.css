@@ -969,3 +969,16 @@ label.field select:focus-visible {
   min-height: 100vh;
   box-sizing: border-box;
 }
+
+/* A catalogued image that is not where the catalog says it is. Dimmed, but the
+   reason is in words as well: colour alone is not a message. */
+.shot-missing .shot-subject,
+.shot-missing .shot-meta { opacity: 0.55; }
+.shot-gone { color: #ffc46b; font-weight: 500; font-size: 0.8125rem; }
+
+/* Journal sync states, in the same vocabulary as the other integrations. */
+.status-not-connected { color: var(--muted); }
+.status-connected { color: #7ddc8a; border-color: #2f6b38; }
+.status-syncing { color: var(--accent); border-color: var(--accent); }
+.status-needs-attention { color: #ffc46b; border-color: #7a5a1f; }
+.status-unavailable { color: #ff8f7a; border-color: #7a3126; }

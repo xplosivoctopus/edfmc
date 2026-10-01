@@ -8,6 +8,12 @@
  *
  * Read-only for now. Notes and sessions have schema and no editing UI yet; see
  * docs/ACTIVITY-JOURNAL.md for what is deferred and why.
+ *
+ * The one action here is **rebuilding from the journal files on disk**, which
+ * lives on this screen rather than on the EDFM sync card because it is a local
+ * operation that sends nothing. A commander who wants a complete field journal
+ * on their own machine and nothing on any website is a reasonable commander, and
+ * putting this behind an EDFM connection would deny them that.
  */
 
 import { useMemo, useState } from 'react';
@@ -38,6 +44,23 @@ function when(iso: string): string {
 
 export function Journal({ snap }: { snap: CompanionSnapshot }) {
   const [filter, setFilter] = useState<Filter>('All Activity');
+  const [progress, setProgress] = useState<{ done: number; total: number } | null>(null);
+  const [result, setResult] = useState<string | null>(null);
+
+  const rebuilding = snap.journalSync.rebuilding;
+
+  async function rebuild() {
+    setResult(null);
+    setProgress({ done: 0, total: 0 });
+    const r = await snap.rebuildActivityHistory((done, total) => setProgress({ done, total }));
+    setProgress(null);
+    setResult(
+      r.entriesAdded === 0
+        ? `Read ${r.filesRead} journal ${r.filesRead === 1 ? 'file' : 'files'}; nothing new to add.`
+        : `Recovered ${r.entriesAdded} ${r.entriesAdded === 1 ? 'entry' : 'entries'} from ${r.filesRead} journal ${r.filesRead === 1 ? 'file' : 'files'}.` +
+            (r.failed > 0 ? ` ${r.failed} could not be read.` : ''),
+    );
+  }
 
   const groups = useMemo<readonly ActivityGroup[]>(() => {
     if (filter === 'All Activity') return snap.activity;
@@ -53,9 +76,16 @@ export function Journal({ snap }: { snap: CompanionSnapshot }) {
     <>
       <section className="card">
         <h2>Journal</h2>
+        {/*
+          This line used to promise the journal left the machine under no
+          circumstances, which stopped being true when EDFM Commander Journal
+          was built. The precise claim is better than the comfortable one: it
+          stays here unless the commander connects that one integration, which
+          ships off.
+        */}
         <p className="muted">
-          What you have actually done, built from your game&apos;s journal. Kept on this
-          machine and never uploaded.
+          What you have actually done, built from your game&apos;s journal. Kept on this machine,
+          and sent nowhere unless you connect EDFM Commander Journal yourself.
         </p>
 
         <div className="row" role="group" aria-label="Filter activity">
@@ -71,6 +101,42 @@ export function Journal({ snap }: { snap: CompanionSnapshot }) {
             </button>
           ))}
         </div>
+      </section>
+
+      <section className="card">
+        <h3>Recover earlier activity</h3>
+        <p className="field-hint">
+          Activity from before you installed the Companion was never recorded, because reading
+          your journal is what records it. This reads the journal files still on this machine and
+          recovers what it can. It is safe to run more than once, and it changes nothing about
+          your live session.
+        </p>
+        <p className="audit-actions">
+          <button
+            type="button"
+            className="secondary"
+            onClick={() => void rebuild()}
+            disabled={rebuilding}
+          >
+            {rebuilding ? 'Reading journals…' : 'Rebuild from journal files'}
+          </button>
+          {rebuilding && (
+            <button type="button" className="secondary" onClick={snap.cancelActivityRebuild}>
+              Stop
+            </button>
+          )}
+        </p>
+        {progress && progress.total > 0 && (
+          <p className="field-hint">
+            Read {progress.done} of {progress.total} journal files.
+          </p>
+        )}
+        {result && <p className="note">{result}</p>}
+        <p className="field-hint">
+          It can only recover what your journal files still contain. Files you have deleted, or
+          that were lost in a reinstall, hold activity nothing can recover. Nothing is uploaded by
+          rebuilding.
+        </p>
       </section>
 
       {total === 0 ? (

@@ -18,10 +18,15 @@
  *    this on?" should not depend on telling two shades of grey apart.
  */
 
-import { universalNeverShares, type SharingRow } from '@edfm/integrations';
+import {
+  universalNeverShares,
+  type IntegrationDescriptor,
+  type SharingRow,
+} from '@edfm/integrations';
 import { openUrl } from '@tauri-apps/plugin-opener';
 import { useState } from 'react';
 
+import { JournalSync } from './JournalSync';
 import type { CompanionSnapshot } from './lib/companion.js';
 
 const STATUS_LABEL: Record<string, string> = {
@@ -115,10 +120,100 @@ export function Integrations({ snap }: { snap: CompanionSnapshot }) {
         </section>
       )}
 
-      {audit.rows.map((row) => (
-        <IntegrationCard key={row.id} row={row} snap={snap} />
-      ))}
+      {/* First-party and different in kind: your own account rather than a
+          community database, so it leads. */}
+      <JournalSync snap={snap} />
+
+      {audit.rows
+        .filter((row) => row.id !== 'edfm-journal')
+        .map((row) => (
+          <IntegrationCard key={row.id} row={row} snap={snap} />
+        ))}
     </>
+  );
+}
+
+/**
+ * Where a key is entered, for the integrations that need one.
+ *
+ * The value goes straight to the OS credential store and is cleared from the
+ * field immediately. Nothing reads it back: there is no command that returns a
+ * secret, so the app can report that one exists and nothing more.
+ */
+function CredentialField({
+  service,
+  row,
+  snap,
+}: {
+  service: IntegrationDescriptor;
+  row: SharingRow;
+  snap: CompanionSnapshot;
+}) {
+  const [value, setValue] = useState('');
+  const [problem, setProblem] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  async function save() {
+    setBusy(true);
+    setProblem(null);
+    const reason = await snap.setIntegrationCredential(service.id, value);
+    // Cleared either way: a key that failed is not worth keeping on screen, and
+    // one that worked must not be shown again.
+    setValue('');
+    setBusy(false);
+    setProblem(reason);
+  }
+
+  if (row.hasCredential) {
+    return (
+      <div className="field">
+        <span>API key</span>
+        <p className="field-hint">
+          Stored in the Windows Credential Manager. It is never shown again, and this app
+          cannot read it back — only whether one exists.
+        </p>
+        <p className="audit-actions">
+          <button
+            type="button"
+            className="secondary"
+            onClick={() => void snap.clearIntegrationCredential(service.id)}
+          >
+            Remove key
+          </button>
+        </p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="field">
+      <span>API key</span>
+      <input
+        value={value}
+        onChange={(e) => setValue(e.target.value)}
+        placeholder="Paste your key"
+        spellCheck={false}
+        autoComplete="off"
+        // Masked while typing: this gets filled during streams and screen shares.
+        type="password"
+      />
+      {service.privacy.credentialHelp && (
+        <span className="field-hint">{service.privacy.credentialHelp}</span>
+      )}
+      {problem && <p className="note">{problem}</p>}
+      <p className="audit-actions">
+        <button type="button" className="primary" onClick={() => void save()} disabled={busy}>
+          {busy ? 'Saving…' : 'Save key'}
+        </button>
+        <button
+          type="button"
+          className="secondary"
+          onClick={() => void openUrl(service.homepage).catch(() => undefined)}
+        >
+          Open {service.name}
+        </button>
+      </p>
+    </div>
   );
 }
 
@@ -149,12 +244,15 @@ function IntegrationCard({ row, snap }: { row: SharingRow; snap: CompanionSnapsh
           <input
             type="checkbox"
             checked={row.enabled}
+            // A service that needs a key and has none cannot send, so the
+            // switch would promise something that does not happen.
+            disabled={service.privacy.requiresCredential && !row.hasCredential}
             onChange={(e) => void snap.setIntegrationEnabled(row.id, e.target.checked)}
           />
           <span>
             Enable {service.name}
-            {service.privacy.requiresCredential && (
-              <span className="muted-inline"> — needs an API key before anything is sent</span>
+            {service.privacy.requiresCredential && !row.hasCredential && (
+              <span className="muted-inline"> ''' + DASH + ''' add an API key below first</span>
             )}
           </span>
         </label>
@@ -231,6 +329,10 @@ function IntegrationCard({ row, snap }: { row: SharingRow; snap: CompanionSnapsh
             </button>
           )}
         </p>
+      )}
+
+      {service.privacy.requiresCredential && service.implemented && (
+        <CredentialField service={service} row={row} snap={snap} />
       )}
 
       <div className="privacy-grid">

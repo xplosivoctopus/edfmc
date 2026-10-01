@@ -138,7 +138,17 @@ describe('application startup', () => {
       journal!.click();
     });
     expect(container.textContent).toContain('Journal');
-    expect(container.textContent).toContain('never uploaded');
+    /*
+     * This asserted "never uploaded", which stopped being true when EDFM
+     * Commander Journal was built: the Activity Journal does leave the machine
+     * if the commander connects that integration. The screen now makes the
+     * conditional claim, and the test holds it to the conditional one -- a
+     * rendered page promising more privacy than the app delivers is the exact
+     * thing worth failing a build over.
+     */
+    expect(container.textContent).toContain('Kept on this machine');
+    expect(container.textContent).toContain('unless you connect EDFM Commander Journal');
+    expect(container.textContent).not.toContain('never uploaded');
   });
 
   it('asks for a guidance level on first run', async () => {

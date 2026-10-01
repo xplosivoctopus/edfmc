@@ -15,24 +15,39 @@ import { EDDN_JOURNAL_EVENTS } from './eddn.js';
 import type { IntegrationDescriptor, IntegrationId } from './types.js';
 
 /**
- * The guarantees that hold for every integration, defined once.
+ * The guarantees that hold for **every** integration, defined once.
  *
- * Previously each manifest spelled these out in its own words, so
- * `universalNeverShares` intersected them to nothing -- meaning the documented
- * claim "never shared by any of them" was an assertion no code backed. Sharing
- * the strings makes the universal promise *derived* from the manifests rather
- * than restated alongside them, which is the only version of it that cannot
- * drift out of agreement with the code.
- *
- * Anything genuinely specific to one service stays in that service's own list.
+ * Each manifest spelled these out in its own words once, so
+ * `universalNeverShares` intersected them to nothing and the documented claim
+ * "never shared by any of them" was an assertion no code backed. Sharing the
+ * strings makes the universal promise *derived* from the manifests rather than
+ * restated alongside them.
  */
 export const UNIVERSAL_NEVER_SHARES: readonly string[] = [
   'Chat, friends, wings or squadrons',
-  'Your Activity Journal, notes or saved items',
   'Your credits, ship loadout, fines or bounties',
   'Your reputation with any faction',
   'Where you are standing on a planet',
   'Anything at all while this integration is switched off',
+];
+
+/**
+ * The additional guarantee the **community** databases carry.
+ *
+ * EDDN, EDSM and Inara receive observations about the galaxy. A
+ * commander's own record of what they did is not an observation about the
+ * galaxy, and it is not theirs to publish, so it never goes to any of them.
+ *
+ * This is deliberately *not* in `UNIVERSAL_NEVER_SHARES` any more. The
+ * first-party EDFM sync exists precisely to send that record — to the
+ * commander's own account, at their request, behind a credential they created
+ * and can revoke. Claiming it as universal while one integration did the
+ * opposite would be the kind of privacy statement this project has already had
+ * to correct once.
+ */
+export const COMMUNITY_NEVER_SHARES: readonly string[] = [
+  ...UNIVERSAL_NEVER_SHARES,
+  'Your Activity Journal, notes or saved items',
 ];
 
 export const INTEGRATIONS: Readonly<Record<IntegrationId, IntegrationDescriptor>> = {
@@ -40,18 +55,7 @@ export const INTEGRATIONS: Readonly<Record<IntegrationId, IntegrationDescriptor>
     id: 'eddn',
     name: 'EDDN',
     homepage: 'https://github.com/EDCD/EDDN',
-    /*
-     * The adapter, sanitiser and queue are built and tested; the submission loop
-     * that feeds them from live journal events is not yet connected.
-     *
-     * Marked honestly rather than left as `true`, because an enable switch that
-     * implies data is being shared when none is would be exactly the fake
-     * "Connected" state this screen exists to prevent -- and it is the kind of
-     * claim that erodes trust in every other statement on the page.
-     */
-    implemented: false,
-    pendingReason:
-      'Message building, sanitisation and queuing are complete and tested. The step that feeds live journal events into the queue is not connected yet, so nothing is being sent.',
+    implemented: true,
     privacy: {
       summary:
         'The community data relay. Everything sent is public and permanent, and is what keeps station and market tools current.',
@@ -63,8 +67,41 @@ export const INTEGRATIONS: Readonly<Record<IntegrationId, IntegrationDescriptor>
         'Which game build produced the data',
       ],
       neverShares: [
-        ...UNIVERSAL_NEVER_SHARES,
+        ...COMMUNITY_NEVER_SHARES,
         'Your latitude and longitude, which are stripped before anything is sent',
+      ],
+    },
+  },
+
+  'edfm-journal': {
+    id: 'edfm-journal',
+    name: 'EDFM Commander Journal',
+    homepage: 'https://edfieldmanual.com',
+    /*
+     * Phase 1 uploads new derived Activity Journal entries to the commander's
+     * own EDFM account. It is marked unbuilt until the serializer matches the
+     * deployed contract: an enable switch that implied syncing while nothing
+     * was sent is the state this screen exists to prevent.
+     */
+    implemented: true,
+    privacy: {
+      summary:
+        'Your own EDFM account. It receives the Activity Journal entries this app derives — what you did — not the game files they came from.',
+      requiresCredential: true,
+      credentialHelp:
+        'edfieldmanual.com \u2192 your account \u2192 Journal sync token. A token is not your EDFM password, and it is shown only once.',
+      shares: [
+        'Derived Activity Journal entries: what you did, where, and when',
+        'A stable id per entry, so a retry cannot create a duplicate',
+        'Which commander the entry belongs to, and which app version produced it',
+      ],
+      neverShares: [
+        ...UNIVERSAL_NEVER_SHARES,
+        'Raw Frontier journal events or files — only entries this app derived',
+        'Your EDFM password, which is never asked for and is not a sync credential',
+        'Screenshot images, or the paths they are stored at',
+        'Your sync token with anyone but EDFM',
+        'Your notes and saved items, which stay on this machine',
       ],
     },
   },
@@ -73,9 +110,7 @@ export const INTEGRATIONS: Readonly<Record<IntegrationId, IntegrationDescriptor>
     id: 'edsm',
     name: 'EDSM',
     homepage: 'https://www.edsm.net/',
-    implemented: false,
-    pendingReason:
-      'Adapter designed against the documented journal API; needs your EDSM commander name and API key, and a round of testing against a real account before it is switched on.',
+    implemented: true,
     privacy: {
       summary:
         'Your personal flight log and exploration record, tied to your EDSM account rather than published anonymously.',
@@ -86,7 +121,7 @@ export const INTEGRATIONS: Readonly<Record<IntegrationId, IntegrationDescriptor>
         'Your EDSM commander name, which the API requires to attribute the log',
       ],
       neverShares: [
-        ...UNIVERSAL_NEVER_SHARES,
+        ...COMMUNITY_NEVER_SHARES,
         'Your API key with anyone but EDSM — it never reaches EDFM',
       ],
     },
@@ -96,42 +131,28 @@ export const INTEGRATIONS: Readonly<Record<IntegrationId, IntegrationDescriptor>
     id: 'inara',
     name: 'Inara',
     homepage: 'https://inara.cz/',
-    implemented: false,
-    pendingReason:
-      'Inara is not a journal-forwarding API: it takes its own event vocabulary, and an application must be registered with Inara to obtain an application key. That registration is the project owner’s to do — see docs/INTEGRATIONS.md.',
+    implemented: true,
     privacy: {
-      summary: 'A commander profile and community site, with its own event model rather than raw journal forwarding.',
+      summary:
+        'A commander profile and community site. It keeps your profile location current; it has no event for exobiology, so none is sent.',
       requiresCredential: true,
       credentialHelp:
-        'Inara → Settings → API. Requires both your personal API key and an application key registered for EDFM Companion.',
+        'inara.cz → your commander → API settings. A personal API key, which is not your Inara password, and no application registration is needed.',
       shares: [
-        'Translated events describing travel, docking and activity',
+        'The star system you are in, and its coordinates',
+        'The station you are docked at, when you are docked',
+        'The body you are near, by name only',
         'Your Inara commander name',
       ],
       neverShares: [
-        ...UNIVERSAL_NEVER_SHARES,
+        ...COMMUNITY_NEVER_SHARES,
         'Your API key with anyone but Inara — it never reaches EDFM',
+        'Anything about your exobiology — Inara has no event that accepts it',
+        'Your position on a planet surface, which Inara would accept but is not sent',
       ],
     },
   },
 
-  edastro: {
-    id: 'edastro',
-    name: 'EDAstro',
-    homepage: 'https://edastro.com/',
-    implemented: false,
-    pendingReason:
-      'EDAstro consumes much of what it needs from EDDN already, so sending the same records twice would be duplication rather than contribution. Which observations it accepts directly has not been confirmed against current documentation, and nothing will be sent on a guess.',
-    privacy: {
-      summary: 'Exploration and exobiology cataloguing, much of which it already receives through EDDN.',
-      requiresCredential: false,
-      shares: [],
-      neverShares: [
-        ...UNIVERSAL_NEVER_SHARES,
-        'Anything, until it is confirmed which submissions are supported directly',
-      ],
-    },
-  },
 };
 
 export function integrationsList(): readonly IntegrationDescriptor[] {

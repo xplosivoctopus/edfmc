@@ -321,7 +321,7 @@ export class LiveActivityTracker {
    *
    * It restores the **identity** as well as the flag. The entry carries the
    * species and variant, so a specimen recovered after a restart reads
-   * "Fonticulua Campestris Teal" with its value, not a bare "Fonticulua" """ + DASH + """
+   * "Fonticulua Campestris Teal" with its value, not a bare "Fonticulua" —
    * which is all a surface scan would have given.
    *
    * Progress rows remain the only source for a **partial** count: three samples

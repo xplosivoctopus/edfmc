@@ -7,11 +7,28 @@ commitment we hold ourselves to.
 
 ## Current state
 
-**Nothing leaves the machine unless you turn verification on.** It is off by default
-and there is no telemetry and no analytics in any configuration.
+**Nothing leaves the machine unless you switch something on.** Everything that
+sends is off by default, and there is no telemetry and no analytics in any
+configuration.
 
-With verification **off** — the default — the application makes no network requests at
-all.
+There are now four such switches, and this section used to name only the first.
+Verification was once the only thing that sent anything, so "with verification
+off the application makes no network requests at all" was true when it was
+written and stopped being true as each integration was built. Keeping it would
+have been the most reassuring sentence on the page and the least accurate:
+
+| Switch | Default | What it sends |
+|---|---|---|
+| **Verification / contribution** | Off | Reference lookups and station observations — below |
+| **EDDN** | Off | Anonymous community observations about the galaxy |
+| **EDSM** | Off | Your flight log, under your own API key |
+| **Inara** | Off | Your current location, under your own API key |
+| **EDFM Commander Journal** | Off | Derived Activity Journal entries, to your own EDFM account |
+
+With **all of them off**, which is how the app ships, it makes no network request
+on its own. The one exception is an action you take yourself: see *Contribution
+being off* below. `docs/INTEGRATIONS.md` and `docs/JOURNAL-SYNC.md` are the full
+account of the last four.
 
 With verification **on**, exactly two things happen, both only for stations you dock
 at or fly past:

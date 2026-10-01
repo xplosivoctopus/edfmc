@@ -31,12 +31,14 @@ async function rebuild(maxFiles = 80): Promise<{
   entries: ActivityEntry[];
   organicAnalyse: number;
   touchdownsOnPlanet: number;
+  disembarksOnPlanet: number;
 }> {
   const files = (await listJournalFiles(DIR)).filter((f) => f.sizeBytes > 0).slice(-maxFiles);
   const engine = new ActivityEngine({ commanderFid: 'F-TEST' });
   const entries: ActivityEntry[] = [];
   let organicAnalyse = 0;
   let touchdownsOnPlanet = 0;
+  let disembarksOnPlanet = 0;
 
   for (const file of files) {
     const result = await replayFile(file.fullPath);
@@ -50,10 +52,17 @@ async function rebuild(maxFiles = 80): Promise<{
       ) {
         touchdownsOnPlanet += 1;
       }
+      if (
+        event.source.event === 'Disembark' &&
+        raw['OnPlanet'] === true &&
+        raw['OnStation'] !== true
+      ) {
+        disembarksOnPlanet += 1;
+      }
       entries.push(...engine.observe(event));
     }
   }
-  return { entries, organicAnalyse, touchdownsOnPlanet };
+  return { entries, organicAnalyse, touchdownsOnPlanet, disembarksOnPlanet };
 }
 
 suite('activity reconstruction from the real corpus', () => {
@@ -70,19 +79,39 @@ suite('activity reconstruction from the real corpus', () => {
     expect(unnamed, `${unnamed.length} samples produced no organism name`).toHaveLength(0);
   }, 120_000);
 
-  it('records a landing for every planetary touchdown and never claims a first', async () => {
-    const { entries, touchdownsOnPlanet } = await rebuild();
+  it('keeps the journal to milestones rather than every landing', async () => {
+    const { entries, touchdownsOnPlanet, disembarksOnPlanet } = await rebuild();
     if (touchdownsOnPlanet === 0) return;
 
-    const landings = entries.filter((e) => e.subtype === 'landed');
-    expect(landings).toHaveLength(touchdownsOnPlanet);
+    // The regression this replaced: an entry per touchdown. Nothing may record
+    // a plain landing any more.
+    expect(entries.filter((e) => e.subtype === 'landed')).toHaveLength(0);
 
-    // The finding, held against real data: nothing in the journal reports that a
-    // first footfall was achieved, so no entry may say one was.
-    for (const l of landings) {
-      expect(l.title.toLowerCase()).not.toContain('first');
-      expect((l.detail ?? '').toLowerCase()).not.toContain('first');
+    /*
+     * The point of the change, measured rather than asserted by eye: footfall
+     * on an unwalked world is rare next to the traffic it was buried in. In the
+     * corpus 463 planetary touchdowns yielded 98 such candidates, so a ceiling
+     * of half the landings fails loudly if the gate ever stops gating.
+     */
+    const footfalls = entries.filter((e) => e.subtype === 'footfall');
+    expect(footfalls.length).toBeLessThan(Math.max(1, disembarksOnPlanet / 2));
+
+    for (const f of footfalls) {
+      // Every one rests on a reported flag, never on absence of one.
+      expect(f.data['noFootfallRecordedWhenScanned']).toBe(true);
+      // And none claims the achievement the journal cannot evidence.
+      expect(f.title.toLowerCase()).not.toContain('first');
+      expect((f.detail ?? '').toLowerCase()).not.toContain('first');
     }
+  }, 120_000);
+
+  it('never records footfall twice on one body in a system visit', async () => {
+    // Repeat disembarks are ordinary, so a duplicate here would mean the
+    // walked-flag flip is not working against real data.
+    const { entries } = await rebuild();
+    const footfalls = entries.filter((e) => e.subtype === 'footfall');
+    const seen = footfalls.map((f) => `${f.systemAddress}/${f.bodyId}`);
+    expect(new Set(seen).size).toBe(seen.length);
   }, 120_000);
 
   it('resolves body names for most real samples', async () => {

@@ -54,15 +54,20 @@ Two things to expect on first run:
 Your journal contains your chat, friends, finances and travel history. It is
 read on your machine and **never uploaded**.
 
-With contribution switched on, the app sends one thing: observations about
-stations you dock at, over HTTPS. Your Frontier ID travels with them so the
-server can tell two reporters apart, and your commander name travels only if you
-have asked to be credited. The server hashes both on arrival and stores only the
-hashes, so a database dump holds no commander identifiers — but it does see the
-values in transit, and this project will not claim otherwise. There is no
-telemetry and no analytics in any configuration.
+With contribution switched on, the app sends observations about stations you dock
+at, over HTTPS. Your Frontier ID travels with them so the server can tell two
+reporters apart, and your commander name travels only if you have asked to be
+credited. The server hashes both on arrival and stores only the hashes, so a
+database dump holds no commander identifiers — but it does see the values in
+transit, and this project will not claim otherwise. There is no telemetry and no
+analytics in any configuration.
 
-With contribution off, the app makes no network requests on its own. It is not
+Four other things can send, and **every one of them ships off**: EDDN (anonymous
+community observations), EDSM and Inara (under your own API keys), and EDFM
+Commander Journal, which sends your field journal to your own EDFM account.
+Nothing is sent by any of them until you connect it.
+
+With all of that off, the app makes no network requests on its own. It is not
 silent in every configuration, and the distinction is worth stating: asking it to
 plan a colonisation run sends a market query, because that is the feature. That
 request carries commodity names and nothing about you, and happens only when you
@@ -180,7 +185,8 @@ scripts/             Journal profiling tooling
 | [ACTIVITY-JOURNAL.md](docs/ACTIVITY-JOURNAL.md) | The commander field journal: what is recorded, and what the journal cannot prove |
 | [RESEARCH.md](docs/RESEARCH.md) | Research framework, session model, data-quality rules |
 | [LOGISTICS.md](docs/LOGISTICS.md) | Confidence engine, sourcing planner, construction projects |
-| [INTEGRATIONS.md](docs/INTEGRATIONS.md) | EDDN, EDSM, Inara, EDAstro: what each sends, and where credentials live |
+| [INTEGRATIONS.md](docs/INTEGRATIONS.md) | EDDN, EDSM, Inara: what each sends, and where credentials live |
+| [JOURNAL-SYNC.md](docs/JOURNAL-SYNC.md) | EDFM Commander Journal: tokens, what is uploaded, the history rebuild and what it cannot recover |
 | [PLUGINS.md](docs/PLUGINS.md) | Installing and writing plugins, and why they are safe |
 | [EXTENSIONS.md](docs/EXTENSIONS.md) | Extension architecture: tiers, threat model, API boundaries, roadmap |
 | [EDDN.md](docs/EDDN.md) | EDDN ingestion, schemas, normalization decisions |

@@ -23,7 +23,7 @@ import type { NormalizedEvent } from '@edfm/elite-journal';
 import {
   biologicalSignalEntries,
   exobiologyEntries,
-  landingEntries,
+  footfallEntries,
 } from './exobiology.js';
 import type { ActivityContext, ActivityEntry } from './types.js';
 
@@ -103,10 +103,20 @@ export class ActivityEngine {
     const bodyId = typeof raw['BodyID'] === 'number' ? (raw['BodyID'] as number) : null;
     const footfall = bodyId === null ? null : (this.footfallWhenScanned.get(bodyId) ?? null);
 
+    /*
+     * Once footfall is recorded the body is walked, so the flag is flipped to
+     * stop the next disembark repeating the entry. The corpus has disembark
+     * pairs on one body a minute apart, so this is the ordinary case, not an
+     * edge case.
+     */
+    if (bodyId !== null && footfall === false && name === 'Disembark' && raw['OnPlanet'] === true) {
+      this.footfallWhenScanned.set(bodyId, true);
+    }
+
     return [
       ...exobiologyEntries(event, ctx),
       ...biologicalSignalEntries(event, ctx),
-      ...landingEntries(event, ctx, footfall),
+      ...footfallEntries(event, ctx, footfall),
     ];
   }
 
@@ -131,7 +141,7 @@ export class ActivityEngine {
     const bodyName =
       typeof raw['BodyName'] === 'string'
         ? raw['BodyName']
-        : name === 'Touchdown' && typeof raw['Body'] === 'string'
+        : (name === 'Touchdown' || name === 'Disembark') && typeof raw['Body'] === 'string'
           ? raw['Body']
           : null;
 

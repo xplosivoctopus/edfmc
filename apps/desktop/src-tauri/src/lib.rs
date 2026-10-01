@@ -6,6 +6,9 @@
 //! the identical pipeline (see docs/ARCHITECTURE.md §2.2).
 
 mod credentials;
+mod edfm_journal;
+mod edsm;
+mod inara;
 mod journal;
 mod overlay;
 mod plugins;
@@ -721,6 +724,35 @@ fn migrations() -> Vec<Migration> {
                 ON screenshots (commander_fid, file_path);
         "#,
         kind: MigrationKind::Up,
+    },
+    Migration {
+        version: 15,
+        description: "remember what EDFM has acknowledged, so a backfill is not repeated",
+        sql: r#"
+            -- When EDFM acknowledged this entry, or NULL for "not sent".
+            --
+            -- The queue could not answer this. An acknowledged row is DELETED
+            -- from `integration_queue` -- which is correct, it is finished work
+            -- and the queue is not an archive -- but it left no record that the
+            -- entry had ever gone up. So a second backfill re-queued the whole
+            -- history and sent it again, and the preview counted entries EDFM
+            -- already held. The server answers `unchanged` and nothing is
+            -- corrupted, but it is thousands of needless requests and a count
+            -- that misleads the commander about what is left to do.
+            --
+            -- Existing rows get NULL, meaning "written before this migration,
+            -- so it is not known whether EDFM has it". That is the honest value:
+            -- the first backfill after upgrading may re-send entries the server
+            -- already has, and will then record the answer. It is never the
+            -- other way round -- nothing is marked sent that was not.
+            ALTER TABLE activity_entries ADD COLUMN synced_at TEXT;
+
+            -- A backfill asks for exactly this: one commander's syncable rows
+            -- that have not been acknowledged, oldest first.
+            CREATE INDEX IF NOT EXISTS idx_activity_unsynced
+                ON activity_entries (commander_fid, synced_at, occurred_at);
+        "#,
+        kind: MigrationKind::Up,
     }]
 }
 
@@ -818,8 +850,14 @@ pub fn run() {
             screenshot::commit_screenshot,
             screenshot::pictures_dir,
             screenshot::path_exists,
+            screenshot::paths_exist,
             screenshot::folder_writable,
             screenshot::delete_screenshot_file,
+            edfm_journal::edfm_journal_status,
+            edfm_journal::edfm_journal_batch,
+            edsm::edsm_submit,
+            edsm::edsm_discard,
+            inara::inara_submit,
         ])
         .run(tauri::generate_context!())
         .expect("error while running EDFM Companion");

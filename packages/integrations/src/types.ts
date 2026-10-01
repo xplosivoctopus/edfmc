@@ -10,14 +10,24 @@
  * a model and pretending otherwise would mean lying to at least three of them.
  * EDDN takes sanitised raw journal messages on a public relay. EDSM takes
  * journal lines with a per-commander API key. Inara takes its own event
- * vocabulary, not journal forwarding. EDAstro takes specialised observations.
+ * vocabulary rather than journal forwarding.
  *
  * What they DO share is the lifecycle, the privacy manifest, and the rule that
  * a disabled integration performs no network activity at all.
  */
 
 /** Which service. Stable strings: these are persisted and appear in settings. */
-export type IntegrationId = 'eddn' | 'edsm' | 'inara' | 'edastro';
+/**
+ * The services this app can talk to.
+ *
+ * `edfm-journal` is first-party and different in kind from the others: it
+ * is the commander's own EDFM account rather than a community database, it
+ * carries derived Activity Journal entries rather than raw observations, and
+ * what it receives is theirs rather than everyone's. It shares this list anyway
+ * because the rules that matter -- off by default, commander-scoped, credential
+ * in the OS store, nothing sent while disabled -- are the same rules.
+ */
+export type IntegrationId = 'eddn' | 'edsm' | 'inara' | 'edfm-journal';
 
 /**
  * Where an integration stands, as the commander would describe it.

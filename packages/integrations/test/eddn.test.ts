@@ -257,30 +257,43 @@ describe('off means off', () => {
     expect(mayTransmit(built, { enabled: true, hasCredential: false })).toBe(true);
   });
 
-  it('reports EDDN as unbuilt while the submission step is not connected', () => {
+  it('permits transmission for EDDN once it is switched on', () => {
     /*
-     * The builder, sanitiser and queue in this package are finished and tested.
-     * Nothing feeds them from live journal events yet, so EDDN must not claim to
-     * be transmitting.
+     * This replaces a tripwire that asserted EDDN was unbuilt. It was there to
+     * fail the moment the submission loop was connected, so that marking it
+     * built could not happen quietly -- which is exactly what it did.
      *
-     * This test is the tripwire for finishing the wiring: connect the submission
-     * loop and flip `implemented`, and this failure is the reminder to delete it.
+     * EDDN needs no credential: it is anonymous community sharing, so being
+     * enabled is the whole gate.
      */
-    expect(INTEGRATIONS.eddn.implemented).toBe(false);
-    expect(INTEGRATIONS.eddn.pendingReason).toBeTruthy();
-    expect(mayTransmit(INTEGRATIONS.eddn, { enabled: true, hasCredential: true })).toBe(false);
+    expect(INTEGRATIONS.eddn.implemented).toBe(true);
+    expect(INTEGRATIONS.eddn.privacy.requiresCredential).toBe(false);
+    expect(mayTransmit(INTEGRATIONS.eddn, { enabled: true, hasCredential: false })).toBe(true);
+    expect(mayTransmit(INTEGRATIONS.eddn, { enabled: false, hasCredential: false })).toBe(false);
   });
 
   it('refuses an integration that is not built, however it is configured', () => {
-    // The important one. None of the four transmits yet, and a
-    // switch that appears to work while nothing is sent is worse than one that
-    // says so.
-    for (const id of ['eddn', 'edsm', 'inara', 'edastro'] as const) {
-      expect(mayTransmit(INTEGRATIONS[id], { enabled: true, hasCredential: true }), id).toBe(false);
-      expect(integrationStatus(INTEGRATIONS[id], { enabled: true, hasCredential: true }), id).toBe(
-        'not-implemented',
-      );
-      expect(INTEGRATIONS[id].pendingReason, id).toBeTruthy();
+    /*
+     * The important one: a switch that appears to work while nothing is sent is
+     * worse than one that says so.
+     *
+     * The subject is synthetic rather than whichever integration is currently
+     * unfinished, because all four are now built -- and when this test named
+     * one of them, finishing it removed the only coverage of this rule.
+     */
+    const unbuilt = { ...INTEGRATIONS.eddn, implemented: false, pendingReason: 'Not built yet.' };
+    expect(mayTransmit(unbuilt, { enabled: true, hasCredential: true })).toBe(false);
+    expect(integrationStatus(unbuilt, { enabled: true, hasCredential: true })).toBe(
+      'not-implemented',
+    );
+  });
+
+  it('has a reason on record for every integration still unbuilt', () => {
+    // So an unfinished one can never present as merely idle. Vacuous today,
+    // by design: it starts enforcing again the moment one is added.
+    for (const service of Object.values(INTEGRATIONS)) {
+      if (service.implemented) continue;
+      expect(service.pendingReason, service.id).toBeTruthy();
     }
   });
 
@@ -301,12 +314,53 @@ describe('off means off', () => {
     }
   });
 
-  it('never promises to share an Activity Journal or notes', () => {
-    // Local-only, permanently. Asserted so a future adapter cannot quietly add it.
-    for (const d of Object.values(INTEGRATIONS)) {
+  it('never sends the Activity Journal to a community database', () => {
+    /*
+     * EDDN, EDSM and Inara receive observations about the galaxy. A
+     * commander's record of what they did is not an observation about the
+     * galaxy and is not theirs to publish, so it goes to none of them.
+     *
+     * Scoped to the community four rather than to every integration, because
+     * the first-party EDFM sync exists precisely to send that record to the
+     * commander's own account. Asserting the old blanket rule while one
+     * integration did the opposite would be a privacy claim that was not true.
+     */
+    for (const id of ['inara'] as const) {
+      const d = INTEGRATIONS[id];
       const shares = d.privacy.shares.join(' ').toLowerCase();
-      expect(shares, d.id).not.toContain('note');
-      expect(shares, d.id).not.toContain('activity journal');
+      expect(shares, id).not.toContain('note');
+      expect(shares, id).not.toContain('activity journal');
+      expect(d.privacy.neverShares.join(' '), id).toContain('Activity Journal');
     }
+  });
+
+  it('holds the first-party sync to a stricter bargain instead', () => {
+    /*
+     * It may carry the Activity Journal -- that is its purpose -- so the
+     * guarantees that replace the blanket one have to be real: the commander
+     * must have chosen it, it must need a credential they created, and it must
+     * still refuse the things that are nobody's business.
+     */
+    const d = INTEGRATIONS['edfm-journal'];
+
+    expect(d.privacy.requiresCredential).toBe(true);
+    expect(mayTransmit(d, { enabled: false, hasCredential: true })).toBe(false);
+    expect(mayTransmit({ ...d, implemented: true }, { enabled: true, hasCredential: false })).toBe(
+      false,
+    );
+
+    const never = d.privacy.neverShares.join(' ');
+    // Raw game files never leave, whoever the recipient is.
+    expect(never).toMatch(/[Rr]aw Frontier/);
+    expect(never).toMatch(/password/i);
+    expect(never).toMatch(/[Ss]creenshot/);
+    // Notes and saved items stay local even here.
+    expect(never).toMatch(/notes/i);
+
+    // And it does not contradict itself: it cannot both send and withhold the
+    // same thing.
+    const shares = d.privacy.shares.join(' ').toLowerCase();
+    expect(shares).toContain('activity journal');
+    expect(never.toLowerCase()).not.toContain('your activity journal, notes or saved items');
   });
 });
