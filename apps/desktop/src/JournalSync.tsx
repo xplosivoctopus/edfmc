@@ -360,7 +360,7 @@ export function JournalSync({ snap }: { snap: CompanionSnapshot }) {
             rather than discovered by comparing the website against the app.
           */}
           <p className="field-hint">
-            Only exobiology, exploration signals, data sales and first footfalls are sent, because
+            Only exobiology, exploration signals and data sales are sent, because
             those are the categories EDFM accepts.
           </p>
 

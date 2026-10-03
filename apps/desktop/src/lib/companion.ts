@@ -253,7 +253,6 @@ const SYNCABLE_SUBTYPES = [
   'sample-completed',
   'signals-detected',
   'data-sold',
-  'footfall',
 ] as const;
 
 /** Between backfill batches, so a long catch-up is not a burst of traffic. */
@@ -277,17 +276,6 @@ interface ActivityRow {
   sources: string;
 }
 
-/**
- * Footfall entries stored before the rename keep their old title on disk.
- * Shown under the current one rather than rewritten, so the stored row is
- * left exactly as it was recorded.
- */
-function displayTitle(subtype: string, title: string): string {
-  return subtype === 'footfall' && title === 'Footfall on an unvisited world'
-    ? 'First Footfall'
-    : title;
-}
-
 /** One place to turn a row into an entry, so the readers cannot drift apart. */
 function activityFromRow(r: ActivityRow): ActivityEntry {
   return {
@@ -301,7 +289,7 @@ function activityFromRow(r: ActivityRow): ActivityEntry {
     bodyName: r.body_name,
     bodyId: r.body_id,
     locationName: r.location_name,
-    title: displayTitle(r.subtype, r.title),
+    title: r.title,
     detail: r.detail,
     data: safeJsonObject(r.data),
     sources: safeJsonStrings(r.sources),
@@ -4844,8 +4832,11 @@ export class Companion {
     if (!this.db) return;
     try {
       const rows = await this.db.select<ActivityRow[]>(
+        // Footfall entries are no longer recorded. Rows from before that are
+        // left on disk but not shown.
         `SELECT * FROM activity_entries
           WHERE commander_fid = $1
+            AND subtype <> 'footfall'
           ORDER BY occurred_at DESC
           LIMIT $2`,
         [fid, Companion.ACTIVITY_IN_MEMORY],

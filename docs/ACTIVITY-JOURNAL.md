@@ -47,7 +47,6 @@ stage-by-stage list it exists not to be.
 
 | Subtype | Entries in the corpus | From |
 |---|---|---|
-| `footfall` | 61 | `Disembark` on a world last scanned as unwalked |
 | `signals-detected` | 107 | `SAASignalsFound` carrying genera |
 | `sample-completed` | 68 | `ScanOrganic` with `ScanType: Analyse` |
 | `data-sold` | 5 | `SellOrganicData` |
@@ -224,41 +223,21 @@ because it is itself proof of three.
 These are the reason the feature looks the way it does. Each was measured before
 anything was written.
 
-### Landings are not recorded; footfall is recorded as "First Footfall"
+### Landings and footfalls are not recorded
 
 Every planetary `Touchdown` used to become an entry — 283 of them, and 335 in
 the current snapshot. That was wrong in both directions: a landing is parking,
 not a milestone, and the volume buried the things that are.
 
-So the entry is now **footfall on a world the journal said nobody had walked
-on**. Two corrections came out of the corpus:
+That was replaced for a while by a footfall entry: a `Disembark` onto a world
+whose last `Scan` reported `WasFootfalled: false`. It is removed at the
+commander's request. The journal could not back the claim cleanly either:
+`WasFootfalled` describes the body when it was **scanned**, and against the
+game's own cumulative `Statistics.Exploration.First_Footfalls` counter the
+inference produced 98 candidates where the counter moved by 78.
 
-- **It fires on `Disembark`, not `Touchdown`.** Footfall means standing on the
-  surface. Wheels down in a ship is not footfall, and the game's own
-  `Planet_Footfalls` statistic counts the former.
-- **It is gated on `Scan.WasFootfalled` being `false`.** A body with no flag at
-  all — anything scanned before Odyssey — is *unknown*, not unwalked, so
-  absence is never treated as evidence.
-
-That cuts 335 landing entries to 61 footfall entries over the same files.
-
-**The caveat behind the title, with a number.**
-`WasFootfalled` reports whether *anyone* had walked there at the moment the body
-was **scanned** — another commander can footfall it between that scan and your
-landing.
-
-The journal does track the real figure, but only as a running total:
-`Statistics.Exploration.First_Footfalls`, which is cumulative and names no body.
-Checking the inference against it — on-foot disembarks onto bodies last scanned
-as unwalked, deduplicated per body and segmented per commander — gives **98
-candidates against a counter that moved by 78**. A 20% over-claim, with every
-mismatch being the counter staying flat while a candidate fired.
-
-The entry is titled **"First Footfall"** at the commander's request. The
-caveat above lives in the entry's data (`noFootfallRecordedWhenScanned`), and the
-game's own `First_Footfalls` statistic stays the authority on the achievement.
-Entries stored under the old title are shown as "First Footfall" when read
-back; the stored row itself is not rewritten.
+Footfall rows written before the removal stay in the database untouched. They
+are not shown in the Activity Journal and are not sent by journal sync.
 
 ### Missions record the hand-in, not the acceptance
 

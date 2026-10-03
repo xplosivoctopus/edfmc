@@ -134,78 +134,15 @@ describe('exobiology activity', () => {
   });
 });
 
-describe('footfall', () => {
-  it('records footfall on a world the scan said was unwalked', () => {
+describe('landings and footfall', () => {
+  it('records nothing for a landing or for stepping out onto a world', () => {
+    // Neither is a journal entry. A touchdown is parking, and footfall entries
+    // were removed at the commander's request.
     const e = engine();
     e.observe(ev(FSD_JUMP));
     e.observe(ev(SCAN_BODY)); // WasFootfalled: false
-    const entries = e.observe(ev(DISEMBARK));
-
-    expect(entries).toHaveLength(1);
-    expect(entries[0]!.subtype).toBe('footfall');
-    expect(entries[0]!.title).toBe('First Footfall');
-    expect(entries[0]!.bodyName).toBe('Wregoe KO-G c24-10 A 5');
-  });
-
-  it('records nothing for an ordinary landing', () => {
-    // The behaviour that was removed. A touchdown is parking, not a milestone,
-    // and recording all 463 of them is what made the journal unreadable.
-    const e = engine();
-    e.observe(ev(FSD_JUMP));
-    e.observe(ev(SCAN_BODY));
     expect(e.observe(ev(TOUCHDOWN))).toHaveLength(0);
-  });
-
-  it('records nothing on a world that was already walked', () => {
-    const e = engine();
-    e.observe(ev(FSD_JUMP));
-    e.observe(ev(SCAN_BODY.replace('"WasFootfalled":false', '"WasFootfalled":true')));
     expect(e.observe(ev(DISEMBARK))).toHaveLength(0);
-  });
-
-  it('records nothing when no scan reported a footfall flag', () => {
-    /*
-     * The distinction the gate rests on: a body with no flag is unknown, not
-     * unwalked. Bodies scanned before Odyssey carry no flag at all, and
-     * treating absence as evidence would invent a milestone on every one.
-     */
-    const e = engine();
-    e.observe(ev(FSD_JUMP));
-    expect(e.observe(ev(DISEMBARK))).toHaveLength(0);
-  });
-
-  it('does not repeat when the commander steps out a second time', () => {
-    // The corpus has disembark pairs on one body a minute apart.
-    const e = engine();
-    e.observe(ev(FSD_JUMP));
-    e.observe(ev(SCAN_BODY));
-    expect(e.observe(ev(DISEMBARK))).toHaveLength(1);
-    expect(e.observe(ev(DISEMBARK.replace('12:03:20', '12:09:40')))).toHaveLength(0);
-  });
-
-  it('is titled First Footfall and keeps what the journal actually said', () => {
-    /*
-     * The title is the commander's call. `WasFootfalled` reports whether anyone
-     * had walked there when the body was *scanned*, so the fact the entry rests
-     * on stays in `data` for the UI to be precise about.
-     */
-    const e = engine();
-    e.observe(ev(FSD_JUMP));
-    e.observe(ev(SCAN_BODY));
-    const entry = e.observe(ev(DISEMBARK))[0]!;
-
-    expect(entry.data['noFootfallRecordedWhenScanned']).toBe(true);
-    expect(entry.title).toBe('First Footfall');
-    expect((entry.detail ?? '').toLowerCase()).not.toContain('first');
-    expect(JSON.stringify(entry.data).toLowerCase()).not.toContain('first');
-  });
-
-  it('ignores stepping out onto a station', () => {
-    const e = engine();
-    e.observe(ev(FSD_JUMP));
-    e.observe(ev(SCAN_BODY));
-    const station = DISEMBARK.replace('"OnStation":false', '"OnStation":true');
-    expect(e.observe(ev(station))).toHaveLength(0);
   });
 });
 
@@ -274,7 +211,7 @@ describe('grouping', () => {
     expect(groups).toHaveLength(1);
     expect(groups[0]!.systemName).toBe('Wregoe KO-G c24-10');
     expect(groups[0]!.bodyName).toBe('Wregoe KO-G c24-10 A 5');
-    expect(groups[0]!.entries).toHaveLength(3);
+    expect(groups[0]!.entries).toHaveLength(2);
     // Within a group, oldest first: it reads as a sequence of what happened.
     expect(groups[0]!.entries[0]!.subtype).toBe('signals-detected');
   });

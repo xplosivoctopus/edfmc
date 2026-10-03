@@ -23,7 +23,6 @@ import type { NormalizedEvent } from '@edfm/elite-journal';
 import {
   biologicalSignalEntries,
   exobiologyEntries,
-  footfallEntries,
 } from './exobiology.js';
 import { missionEntries } from './missions.js';
 import type { ActivityContext, ActivityEntry } from './types.js';
@@ -39,8 +38,6 @@ export interface ActivityEngineOptions {
 export class ActivityEngine {
   private commanderFid: string | null;
   private bodyNames = new Map<number, string>();
-  /** BodyID -> WasFootfalled as reported when that body was scanned. */
-  private footfallWhenScanned = new Map<number, boolean>();
   private systemName: string | null = null;
   private systemAddress: number | null = null;
 
@@ -74,7 +71,6 @@ export class ActivityEngine {
 
   private reset(): void {
     this.bodyNames.clear();
-    this.footfallWhenScanned.clear();
   }
 
   /**
@@ -101,23 +97,9 @@ export class ActivityEngine {
       systemAddress: this.systemAddress,
     };
 
-    const bodyId = typeof raw['BodyID'] === 'number' ? (raw['BodyID'] as number) : null;
-    const footfall = bodyId === null ? null : (this.footfallWhenScanned.get(bodyId) ?? null);
-
-    /*
-     * Once footfall is recorded the body is walked, so the flag is flipped to
-     * stop the next disembark repeating the entry. The corpus has disembark
-     * pairs on one body a minute apart, so this is the ordinary case, not an
-     * edge case.
-     */
-    if (bodyId !== null && footfall === false && name === 'Disembark' && raw['OnPlanet'] === true) {
-      this.footfallWhenScanned.set(bodyId, true);
-    }
-
     return [
       ...exobiologyEntries(event, ctx),
       ...biologicalSignalEntries(event, ctx),
-      ...footfallEntries(event, ctx, footfall),
       ...missionEntries(event, ctx),
     ];
   }
@@ -134,7 +116,7 @@ export class ActivityEngine {
     this.systemAddress = address ?? this.systemAddress;
   }
 
-  /** Learn BodyID -> name, and the footfall state reported at scan time. */
+  /** Learn BodyID -> name. */
   private trackBodies(name: string, raw: Record<string, unknown>): void {
     const id = typeof raw['BodyID'] === 'number' ? (raw['BodyID'] as number) : null;
     if (id === null) return;
@@ -151,13 +133,6 @@ export class ActivityEngine {
       this.bodyNames.set(id, bodyName);
     }
 
-    // Prior state, recorded as reported. Not evidence that the commander
-    // achieved a first footfall -- the entry is titled so, but this is what it rests on.
-    if (name === 'Scan' && typeof raw['WasFootfalled'] === 'boolean') {
-      if (this.footfallWhenScanned.size < MAX_TRACKED_BODIES) {
-        this.footfallWhenScanned.set(id, raw['WasFootfalled'] as boolean);
-      }
-    }
   }
 }
 
