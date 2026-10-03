@@ -99,9 +99,7 @@ suite('activity reconstruction from the real corpus', () => {
     for (const f of footfalls) {
       // Every one rests on a reported flag, never on absence of one.
       expect(f.data['noFootfallRecordedWhenScanned']).toBe(true);
-      // And none claims the achievement the journal cannot evidence.
-      expect(f.title.toLowerCase()).not.toContain('first');
-      expect((f.detail ?? '').toLowerCase()).not.toContain('first');
+      expect(f.title).toBe('First Footfall');
     }
   }, 120_000);
 

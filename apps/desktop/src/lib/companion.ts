@@ -277,6 +277,17 @@ interface ActivityRow {
   sources: string;
 }
 
+/**
+ * Footfall entries stored before the rename keep their old title on disk.
+ * Shown under the current one rather than rewritten, so the stored row is
+ * left exactly as it was recorded.
+ */
+function displayTitle(subtype: string, title: string): string {
+  return subtype === 'footfall' && title === 'Footfall on an unvisited world'
+    ? 'First Footfall'
+    : title;
+}
+
 /** One place to turn a row into an entry, so the readers cannot drift apart. */
 function activityFromRow(r: ActivityRow): ActivityEntry {
   return {
@@ -290,7 +301,7 @@ function activityFromRow(r: ActivityRow): ActivityEntry {
     bodyName: r.body_name,
     bodyId: r.body_id,
     locationName: r.location_name,
-    title: r.title,
+    title: displayTitle(r.subtype, r.title),
     detail: r.detail,
     data: safeJsonObject(r.data),
     sources: safeJsonStrings(r.sources),

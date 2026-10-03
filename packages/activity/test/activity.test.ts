@@ -143,7 +143,7 @@ describe('footfall', () => {
 
     expect(entries).toHaveLength(1);
     expect(entries[0]!.subtype).toBe('footfall');
-    expect(entries[0]!.title).toBe('Footfall on an unvisited world');
+    expect(entries[0]!.title).toBe('First Footfall');
     expect(entries[0]!.bodyName).toBe('Wregoe KO-G c24-10 A 5');
   });
 
@@ -183,13 +183,11 @@ describe('footfall', () => {
     expect(e.observe(ev(DISEMBARK.replace('12:03:20', '12:09:40')))).toHaveLength(0);
   });
 
-  it('never claims a first footfall', () => {
+  it('is titled First Footfall and keeps what the journal actually said', () => {
     /*
-     * The finding, pinned. `WasFootfalled` reports whether anyone had walked
-     * there when the body was *scanned*, so another commander can footfall it
-     * before this landing. Measured against the game's own First_Footfalls
-     * counter the inference over-claims by 20% (98 candidates against 78), so
-     * no entry may present it as the achievement.
+     * The title is the commander's call. `WasFootfalled` reports whether anyone
+     * had walked there when the body was *scanned*, so the fact the entry rests
+     * on stays in `data` for the UI to be precise about.
      */
     const e = engine();
     e.observe(ev(FSD_JUMP));
@@ -197,7 +195,7 @@ describe('footfall', () => {
     const entry = e.observe(ev(DISEMBARK))[0]!;
 
     expect(entry.data['noFootfallRecordedWhenScanned']).toBe(true);
-    expect(entry.title.toLowerCase()).not.toContain('first');
+    expect(entry.title).toBe('First Footfall');
     expect((entry.detail ?? '').toLowerCase()).not.toContain('first');
     expect(JSON.stringify(entry.data).toLowerCase()).not.toContain('first');
   });

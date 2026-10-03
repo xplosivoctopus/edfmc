@@ -152,7 +152,7 @@ export class ActivityEngine {
     }
 
     // Prior state, recorded as reported. Not evidence that the commander
-    // achieved a first footfall -- nothing in the journal reports that.
+    // achieved a first footfall -- the entry is titled so, but this is what it rests on.
     if (name === 'Scan' && typeof raw['WasFootfalled'] === 'boolean') {
       if (this.footfallWhenScanned.size < MAX_TRACKED_BODIES) {
         this.footfallWhenScanned.set(id, raw['WasFootfalled'] as boolean);

@@ -224,7 +224,7 @@ because it is itself proof of three.
 These are the reason the feature looks the way it does. Each was measured before
 anything was written.
 
-### Landings are not recorded, and "First Footfall" is not claimed
+### Landings are not recorded; footfall is recorded as "First Footfall"
 
 Every planetary `Touchdown` used to become an entry — 283 of them, and 335 in
 the current snapshot. That was wrong in both directions: a landing is parking,
@@ -242,7 +242,7 @@ on**. Two corrections came out of the corpus:
 
 That cuts 335 landing entries to 61 footfall entries over the same files.
 
-**It still does not claim a first footfall, and now there is a number for why.**
+**The caveat behind the title, with a number.**
 `WasFootfalled` reports whether *anyone* had walked there at the moment the body
 was **scanned** — another commander can footfall it between that scan and your
 landing.
@@ -254,8 +254,11 @@ as unwalked, deduplicated per body and segmented per commander — gives **98
 candidates against a counter that moved by 78**. A 20% over-claim, with every
 mismatch being the counter staying flat while a candidate fired.
 
-So the entry is titled "Footfall on an unvisited world", which is what the
-journal supports, and the achievement is left for the game to award.
+The entry is titled **"First Footfall"** at the commander's request. The
+caveat above lives in the entry's data (`noFootfallRecordedWhenScanned`), and the
+game's own `First_Footfalls` statistic stays the authority on the achievement.
+Entries stored under the old title are shown as "First Footfall" when read
+back; the stored row itself is not rewritten.
 
 ### Missions record the hand-in, not the acceptance
 

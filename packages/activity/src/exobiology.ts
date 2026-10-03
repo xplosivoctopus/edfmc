@@ -176,20 +176,15 @@ export function exobiologyEntries(
  * **It is gated on the body being unwalked when scanned.** `Scan.WasFootfalled`
  * is the only footfall flag the journal carries per body.
  *
- * ## What this entry does NOT claim
+ * ## Titled "First Footfall", by the commander's decision
  *
- * It does not claim a first footfall, because the journal cannot support that
- * claim. `WasFootfalled` reports whether *anyone* had walked there **at the
- * moment the body was scanned** -- another commander can footfall it between
- * that scan and this landing.
- *
- * That gap was measured, not assumed. Taking every on-foot disembark onto a
- * body last scanned as unwalked, deduplicated per body and segmented per
- * commander, yields 98 candidates against the game's own `First_Footfalls`
- * counter of 78 over the same span: a 20% over-claim, and every mismatch was
- * the counter staying flat while a candidate fired. So the title says what is
- * true -- the world was unvisited when it was scanned -- and leaves the
- * achievement to the game to award.
+ * The title is "First Footfall" because that is what the commander asked the
+ * journal to record. The caveat is kept in `data` rather than the title:
+ * `WasFootfalled` reports whether *anyone* had walked there **at the moment the
+ * body was scanned**, so another commander can footfall it between that scan
+ * and this landing. Measured against the game's own `First_Footfalls` counter,
+ * 98 candidates fired against 78 counted over the same span -- the game's
+ * statistic remains the authority on the achievement itself.
  */
 export function footfallEntries(
   event: NormalizedEvent,
@@ -225,7 +220,7 @@ export function footfallEntries(
       locationName: null,
       category: 'exploration',
       subtype: 'footfall',
-      title: 'Footfall on an unvisited world',
+      title: 'First Footfall',
       detail: bodyName,
       data: {
         // The fact the gate rests on, kept so the UI can be precise about it
