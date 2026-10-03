@@ -228,17 +228,47 @@ describe('what is uploaded, and what is not', () => {
 });
 
 describe('commander scoping', () => {
-  it('scopes every queue statement to the active commander', () => {
+  it('scopes every queue statement that reads, sends or mutates', () => {
     /*
-     * Commander A's activity must never upload under Commander B's token. The
-     * queue is read, written, retried and deleted by `(integration, id,
-     * commander_fid)` throughout.
+     * Commander A's activity must never upload under Commander B's token, so
+     * the queue is read, written, retried and deleted by
+     * `(integration, id, commander_fid)` throughout.
+     *
+     * This asserted it of EVERY statement mentioning the table, which was too
+     * blunt by exactly one: the preview's `NOT EXISTS` probe matches on
+     * `(integration, id)` ON PURPOSE, because that pair is the table's PRIMARY
+     * KEY and the probe's job is to predict what an `INSERT OR IGNORE` will
+     * collide on. Scoping it made the preview disagree with the insert and
+     * overcount what would be sent.
+     *
+     * The exemption is narrow and named rather than general: a `SELECT 1`
+     * existence probe decides a COUNT, transmits nothing, and returns nothing
+     * about another commander. Anything that reads a payload, sends, deletes or
+     * updates still has to be scoped, and still is.
      */
-    const statements = syncSection.match(/integration_queue[\s\S]*?`/g) ?? [];
-    expect(statements.length).toBeGreaterThan(0);
-    for (const sql of statements) {
-      expect(sql, sql.slice(0, 80)).toContain('commander_fid');
+    /*
+     * Each window starts BEFORE the table name, so the verb in front of it is
+     * visible. Slicing from the table name onwards hid the `SELECT 1 FROM`
+     * that identifies the probe, and the exemption below silently never
+     * applied -- the test failed on the statement it was written to permit.
+     */
+    const statements: string[] = [];
+    for (const m of syncSection.matchAll(/integration_queue/g)) {
+      const from = Math.max(0, m.index! - 32);
+      statements.push(syncSection.slice(from, syncSection.indexOf('`', m.index!)));
     }
+    expect(statements.length).toBeGreaterThan(0);
+
+    let exempt = 0;
+    for (const sql of statements) {
+      if (/SELECT 1 FROM integration_queue/.test(sql)) {
+        exempt += 1;
+        continue;
+      }
+      expect(sql, sql.slice(0, 120)).toContain('commander_fid');
+    }
+    // Pinned, so a new unscoped statement cannot hide behind the exemption.
+    expect(exempt, 'exactly one existence probe is exempt').toBe(1);
   });
 
   it('only sends entries belonging to the active commander', () => {

@@ -291,6 +291,20 @@ never the other way round — nothing is marked sent that was not.
 - **No session grouping.** The server supports `sessionId`, but EDFMC does not
   populate sessions — an automatic boundary rule would be a guess presented as a
   fact, which this project avoids.
+- **The queue is keyed `(integration, id)`, not by commander.** Every statement
+  that reads, sends, deletes or retries is still scoped to one commander, so
+  nothing is ever transmitted under the wrong account. But the *key* is not, so
+  if two commanders on one machine ever produced the same entry id, the second
+  could not be queued while the first was still pending.
+
+  In practice it is unreachable: the id is the journal event id,
+  `sourceFile:byteOffset`, and journal filenames are timestamped per session, so
+  two commanders have different files and different ids. It is recorded because
+  the preview and the upload have to agree about it, and briefly they did not —
+  the preview was scoped to the commander while the upload was an
+  `INSERT OR IGNORE` colliding on the key, so the count offered was larger than
+  the work performed. Both now match on `(integration, id)`, which is what the
+  insert actually does.
 - **5xx responses have no defined shape.** The extension catches only its own
   validation errors, so a database or runtime failure returns whatever MediaWiki
   produces. Those are treated as retryable and their contents are never shown.

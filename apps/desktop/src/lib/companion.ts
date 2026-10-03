@@ -1779,10 +1779,20 @@ export class Companion {
             AND a.subtype IN (${holes})
             AND a.synced_at IS NULL
             AND NOT EXISTS (
+              -- Matched on (integration, id) and deliberately NOT on
+              -- commander_fid, because that pair is the queue's PRIMARY KEY.
+              -- This probe predicts what the upload will actually queue, and
+              -- that upload is an INSERT OR IGNORE: it collides on the key,
+              -- whoever the row belongs to. Adding q.commander_fid = a.commander_fid
+              -- here made the probe disagree with the insert -- the preview
+              -- counted an entry as sendable, the insert then silently dropped
+              -- it, and the number shown was larger than the work done.
+              --
+              -- The scoping that matters is elsewhere and is unaffected: the
+              -- send path selects by commander_fid, so a row belonging to
+              -- another commander is never transmitted under this token.
               SELECT 1 FROM integration_queue q
-               WHERE q.integration = 'edfm-journal'
-                 AND q.id = a.id
-                 AND q.commander_fid = a.commander_fid
+               WHERE q.integration = 'edfm-journal' AND q.id = a.id
             )`,
         [fid, ...SYNCABLE_SUBTYPES],
       );
