@@ -11,6 +11,7 @@ import {
   MissionStore,
   explainMission,
   hasDeliveryProgress,
+  isAwaitingTurnIn,
   remainingCargo,
   missionCaveat,
   missionCategory,
@@ -181,6 +182,86 @@ describe('mission lifecycle', () => {
     const m = s.get(1064798745)!;
     expect(m.status).toBe('completed');
     expect(m.destinationSystem).toBe(UNKNOWN); // we genuinely never learned it
+  });
+});
+
+describe('work done, but not yet handed in', () => {
+  /* Verbatim from the corpus: ItemsDelivered is cumulative, 540 then 1512 of 1512. */
+  const DEPOT_ACCEPTED =
+    '{ "timestamp":"2026-07-25T04:44:38Z", "event":"MissionAccepted", "Faction":"F", "Name":"Mission_Collect_Industrial", "LocalisedName":"Source and return 1512 units of Insulating Membrane", "Commodity":"$InsulatingMembrane_Name;", "Commodity_Localised":"Insulating Membrane", "Count":1512, "DestinationSystem":"Sol", "DestinationStation":"Abraham Lincoln", "Expiry":"2026-07-26T16:47:04Z", "Wing":false, "Influence":"+", "Reputation":"+", "MissionID":700 }';
+  const DEPOT_PARTIAL =
+    '{ "timestamp":"2026-07-25T17:53:01Z", "event":"CargoDepot", "MissionID":700, "UpdateType":"Deliver", "CargoType":"InsulatingMembrane", "CargoType_Localised":"Insulating Membrane", "Count":540, "StartMarketID":0, "EndMarketID":4379214083, "ItemsCollected":0, "ItemsDelivered":540, "TotalItemsToDeliver":1512, "Progress":0.000000 }';
+  const DEPOT_FULL =
+    '{ "timestamp":"2026-07-25T19:17:51Z", "event":"CargoDepot", "MissionID":700, "UpdateType":"Deliver", "CargoType":"InsulatingMembrane", "Count":972, "StartMarketID":0, "EndMarketID":4379214083, "ItemsCollected":0, "ItemsDelivered":1512, "TotalItemsToDeliver":1512, "Progress":0.000000 }';
+
+  it('is not awaiting turn-in while the mission is still being worked', () => {
+    const s = new MissionStore();
+    s.observe(ev(MASSACRE));
+    expect(isAwaitingTurnIn(s.get(1062787030)!)).toBe(false);
+  });
+
+  it('is awaiting turn-in once the game redirects it', () => {
+    /*
+     * The game moves a mission's destination when its objective is met and it
+     * wants you to come back. That is the game saying so, not an inference
+     * from counting kills.
+     */
+    const s = new MissionStore();
+    s.observe(ev(MASSACRE));
+    s.observe(ev(REDIRECTED));
+    expect(isAwaitingTurnIn(s.get(1062787030)!)).toBe(true);
+  });
+
+  it('stops once the mission is handed in, because it is no longer outstanding', () => {
+    /*
+     * The distinction the overlay rests on. `MissionCompleted` means handed in:
+     * the mission leaves `active()` and disappears from the widget entirely, so
+     * it must not also read as "Completed, go turn it in".
+     */
+    const s = new MissionStore();
+    s.observe(ev(MASSACRE));
+    s.observe(ev(REDIRECTED));
+    s.observe(
+      ev(
+        '{ "timestamp":"2026-08-09T04:00:00Z", "event":"MissionCompleted", "Faction":"Sirius Special Forces", "Name":"Mission_Massacre_Legal_Military_name", "MissionID":1062787030, "Reward":11624394 }',
+      ),
+    );
+    expect(isAwaitingTurnIn(s.get(1062787030)!)).toBe(false);
+    expect(s.active()).toHaveLength(0);
+  });
+
+  it('is not awaiting turn-in for a failed or abandoned mission', () => {
+    const s = new MissionStore();
+    s.observe(ev(MASSACRE));
+    s.observe(ev(REDIRECTED));
+    s.observe(
+      ev('{ "timestamp":"2026-08-09T04:00:00Z", "event":"MissionFailed", "Name":"x", "MissionID":1062787030 }'),
+    );
+    expect(isAwaitingTurnIn(s.get(1062787030)!)).toBe(false);
+  });
+
+  it('is awaiting turn-in when every item has been delivered', () => {
+    // Depot missions are not redirected, so delivery is the only signal.
+    const s = new MissionStore();
+    s.observe(ev(DEPOT_ACCEPTED));
+    s.observe(ev(DEPOT_PARTIAL));
+    expect(isAwaitingTurnIn(s.get(700)!), '540 of 1512 is not done').toBe(false);
+
+    s.observe(ev(DEPOT_FULL));
+    expect(isAwaitingTurnIn(s.get(700)!)).toBe(true);
+  });
+
+  it('does not call a mission done on no delivery information at all', () => {
+    /*
+     * The trap in a `delivered >= total` test: both unknown must not satisfy
+     * it. A courier mission reports no depot progress, and telling a commander
+     * their untouched mission was finished is worse than saying nothing.
+     */
+    const s = new MissionStore();
+    s.observe(ev(COURIER));
+    const m = s.get(1061622848)!;
+    expect(hasDeliveryProgress(m)).toBe(false);
+    expect(isAwaitingTurnIn(m)).toBe(false);
   });
 });
 

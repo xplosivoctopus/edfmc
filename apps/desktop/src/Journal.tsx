@@ -23,7 +23,14 @@ import { linksFor, type ActivityCategory, type ActivityGroup } from '@edfm/activ
 
 import type { CompanionSnapshot } from './lib/companion.js';
 
-const FILTERS = ['All Activity', 'Exobiology', 'Exploration', 'Mining', 'Colonisation'] as const;
+const FILTERS = [
+  'All Activity',
+  'Exobiology',
+  'Exploration',
+  'Mining',
+  'Colonisation',
+  'Missions',
+] as const;
 type Filter = (typeof FILTERS)[number];
 
 const CATEGORY_OF: Record<Exclude<Filter, 'All Activity'>, ActivityCategory> = {
@@ -31,6 +38,7 @@ const CATEGORY_OF: Record<Exclude<Filter, 'All Activity'>, ActivityCategory> = {
   Exploration: 'exploration',
   Mining: 'mining',
   Colonisation: 'colonisation',
+  Missions: 'missions',
 };
 
 /** `2026-09-28 13:14`. Local time: the commander played in their own timezone. */

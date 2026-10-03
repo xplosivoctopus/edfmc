@@ -26,12 +26,21 @@
  * be got wrong.
  */
 
-/** Broad activity families. Deliberately few; more is a schema change, not a guess. */
+/**
+ * Broad activity families. Deliberately few; more is a schema change, not a guess.
+ *
+ * **`missions` is local-only for now.** EDFM's journal extension allowlists four
+ * categories, and this is the fifth, so mission entries are kept and shown here
+ * but are refused by the server with `unsupported_category` until the wiki
+ * accepts them. The client declines to send them rather than discovering that
+ * per entry; see `SYNCABLE_SUBTYPES` and `docs/JOURNAL-SYNC.md`.
+ */
 export type ActivityCategory =
   | 'exobiology'
   | 'exploration'
   | 'mining'
-  | 'colonisation';
+  | 'colonisation'
+  | 'missions';
 
 /**
  * One thing the commander did.

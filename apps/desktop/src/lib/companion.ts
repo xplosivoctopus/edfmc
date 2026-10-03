@@ -50,6 +50,7 @@ import {
   explainMission,
   fromRow,
   hasDeliveryProgress,
+  isAwaitingTurnIn,
   remainingCargo,
   toRow,
   type DestinationGroup,
@@ -239,6 +240,14 @@ const COMPANION_VERSION = '0.1.0';
  * to be recorded, that was dropped as noise, and those rows are still on disk.
  * A backfill driven by "everything stored" would upload hundreds of them to a
  * public profile -- activity this app no longer considers worth recording.
+ *
+ * `mission-completed` is absent for a different reason, and not because it is
+ * unwanted: EDFM's journal extension allowlists four categories and `missions`
+ * is not one of them, so the server answers `unsupported_category` and the entry
+ * is marked permanently rejected. Queueing work that cannot succeed would fill a
+ * commander's Failed count with entries nothing they do can fix. The moment the
+ * wiki accepts the category, this list is the only thing that changes -- the
+ * entries are already being recorded and stored.
  */
 const SYNCABLE_SUBTYPES = [
   'sample-completed',
@@ -4101,6 +4110,7 @@ export class Companion {
           : null,
         expiry: isKnown(m.expiry) ? relativeExpiry(m.expiry) : null,
         cargo: cargoLabel(m),
+        awaitingTurnIn: isAwaitingTurnIn(m),
         note: this.widgets.edfmNotes ? explainMission(m) : null,
       }));
 

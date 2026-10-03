@@ -40,6 +40,8 @@ interface MissionRow {
   destination: string | null;
   expiry: string | null;
   cargo: string | null;
+  /** Objective met; only handing it in remains. Still outstanding. */
+  awaitingTurnIn: boolean;
   note: string | null;
 }
 
@@ -647,12 +649,24 @@ function MissionsWidget({ missions }: { missions: OverlayMissions }) {
 
       <div className="mission-rows">
         {missions.rows.map((m) => (
-          <div key={m.id} className="mission-row">
+          <div key={m.id} className={m.awaitingTurnIn ? 'mission-row done' : 'mission-row'}>
             <div className="mission-row-head">
               <span className="mission-row-name">{m.name}</span>
-              <span className={m.expiry === 'Expired' ? 'mission-row-exp urgent' : 'mission-row-exp'}>
-                {m.expiry ?? '—'}
-              </span>
+              {/*
+                Replaces the expiry rather than sitting beside it. Once the work
+                is done the clock is no longer the thing to act on -- the thing
+                to act on is going and handing it in -- and two competing
+                statuses on one line is how a commander reads neither.
+              */}
+              {m.awaitingTurnIn ? (
+                <span className="mission-row-exp done">Completed</span>
+              ) : (
+                <span
+                  className={m.expiry === 'Expired' ? 'mission-row-exp urgent' : 'mission-row-exp'}
+                >
+                  {m.expiry ?? '—'}
+                </span>
+              )}
             </div>
             <div className="mission-row-meta">
               {m.destination ?? <span className="unknown">No destination given</span>}

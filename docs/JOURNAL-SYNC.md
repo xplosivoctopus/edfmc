@@ -288,6 +288,16 @@ never the other way round — nothing is marked sent that was not.
 - **No date or category ranges on an upload.** It is all of the syncable
   categories or none. Ranges are a real request and nothing here blocks them;
   they are simply not built.
+- **Missions are recorded locally but cannot be sent.** The Activity Journal now
+  records a `mission-completed` entry when a mission is handed in, with the
+  reward the game paid. EDFM's journal extension allowlists four categories —
+  `exobiology`, `exploration`, `mining`, `colonisation` — and `missions` is a
+  fifth, so the server would answer `unsupported_category` and the entry would be
+  marked permanently rejected. Queueing work that cannot succeed would fill the
+  Failed count with entries nothing the commander does can fix, so it is not
+  queued at all. Adding the category to the wiki extension and then adding
+  `mission-completed` to `SYNCABLE_SUBTYPES` is the whole change; the entries are
+  already being recorded and stored against that day.
 - **No session grouping.** The server supports `sessionId`, but EDFMC does not
   populate sessions — an automatic boundary rule would be a guess presented as a
   fact, which this project avoids.

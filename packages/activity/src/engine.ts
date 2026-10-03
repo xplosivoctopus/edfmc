@@ -25,6 +25,7 @@ import {
   exobiologyEntries,
   footfallEntries,
 } from './exobiology.js';
+import { missionEntries } from './missions.js';
 import type { ActivityContext, ActivityEntry } from './types.js';
 
 /** A system has a few dozen bodies; this is slack, not a target. */
@@ -117,6 +118,7 @@ export class ActivityEngine {
       ...exobiologyEntries(event, ctx),
       ...biologicalSignalEntries(event, ctx),
       ...footfallEntries(event, ctx, footfall),
+      ...missionEntries(event, ctx),
     ];
   }
 

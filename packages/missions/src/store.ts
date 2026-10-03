@@ -110,6 +110,39 @@ export function hasDeliveryProgress(m: Mission): boolean {
 }
 
 /**
+ * Whether the work is done and only handing it in remains.
+ *
+ * Two signals, both reported rather than inferred:
+ *
+ * 1. **`MissionRedirected` has fired.** The game moves a mission's destination
+ *    when its objective is met and it wants you to return -- a massacre's kills
+ *    reached, a scan taken. That is the game saying "done, come back", and it
+ *    is already recorded as `redirected`.
+ * 2. **Every item has been delivered.** `CargoDepot` reports `ItemsDelivered`
+ *    against `TotalItemsToDeliver`, so a depot mission is finished when the
+ *    first reaches the second. Redirection does not fire for these.
+ *
+ * Deliberately NOT inferred for anything else. A kill mission with no
+ * redirection yet is not "probably nearly done" -- counting `Bounty` events
+ * against a target would be a guess, and the overlay would tell a commander
+ * their work was finished when it was not. Anything this cannot establish stays
+ * simply active, which is the honest answer.
+ *
+ * This is distinct from `status === 'completed'`, which means `MissionCompleted`
+ * fired -- the mission was HANDED IN and is no longer active at all.
+ */
+export function isAwaitingTurnIn(m: Mission): boolean {
+  if (m.status !== 'active') return false;
+  if (m.redirected) return true;
+  return (
+    isKnown(m.totalToDeliver) &&
+    isKnown(m.delivered) &&
+    m.totalToDeliver > 0 &&
+    m.delivered >= m.totalToDeliver
+  );
+}
+
+/**
  * Categories that normally involve cargo. Used only to decide whether a *missing*
  * commodity/count is worth flagging, never to count cargo.
  */

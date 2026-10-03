@@ -126,4 +126,17 @@ const CATEGORY_PAGE: Record<ActivityEntry['category'], string | null> = {
   exploration: 'Exploration',
   mining: 'Mining',
   colonisation: 'Colonisation',
+  /*
+   * Null because it is UNVERIFIED, not because missions have no page.
+   *
+   * Every other entry here was confirmed to exist against the live wiki before
+   * being linked, for the reason at the top of this file: a link that looks
+   * authoritative and 404s is worse than no link. A `Missions` page was not
+   * checked, because the network this was written on refuses edfieldmanual.com.
+   *
+   * Confirming it is one query -- `action=query&titles=Missions` -- and if it
+   * exists, this line and `VERIFIED_EDFM_PAGES` are the whole change. Guessing
+   * it in the meantime is the exact mistake the 25 absent species pages taught.
+   */
+  missions: null,
 };

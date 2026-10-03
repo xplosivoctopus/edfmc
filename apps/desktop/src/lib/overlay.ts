@@ -312,6 +312,14 @@ export interface OverlayMissionRow {
   /** Relative expiry, pre-formatted: the overlay has no clock of its own. */
   expiry: string | null;
   cargo: string | null;
+  /**
+   * The objective is done and only handing it in remains.
+   *
+   * Distinct from the mission being gone: a handed-in mission leaves the active
+   * list and stops being sent at all, so this is only ever true for one that is
+   * still outstanding.
+   */
+  awaitingTurnIn: boolean;
   /** EDFM's editorial note, already filtered by the edfmNotes setting. */
   note: string | null;
 }

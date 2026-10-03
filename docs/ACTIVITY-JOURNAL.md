@@ -51,6 +51,7 @@ stage-by-stage list it exists not to be.
 | `signals-detected` | 107 | `SAASignalsFound` carrying genera |
 | `sample-completed` | 68 | `ScanOrganic` with `ScanType: Analyse` |
 | `data-sold` | 5 | `SellOrganicData` |
+| `mission-completed` | not yet measured | `MissionCompleted` |
 
 The counts above are from the 299-file snapshot named at the top of this document.
 The sequence measurements below were taken later, against 303 files and 323
@@ -255,6 +256,46 @@ mismatch being the counter staying flat while a candidate fired.
 
 So the entry is titled "Footfall on an unvisited world", which is what the
 journal supports, and the achievement is left for the game to award.
+
+### Missions record the hand-in, not the acceptance
+
+A mission produces **one** entry, on `MissionCompleted` — the moment it is handed
+in and paid.
+
+Accepting is not recorded. Taking a mission is an intention, and a journal of
+intentions is the parking-event problem the 463 removed `Touchdown` entries
+already taught. Failure and abandonment are not recorded either, for the same
+reason in reverse: they are things that did not happen. The mission store tracks
+all four outcomes for the live view; only one of them is history worth keeping.
+
+**The reward is the one the game paid**, from `MissionCompleted.Reward`, not the
+figure offered at acceptance — bonuses, faction effects and partial completions
+move it, and what belongs in a record is what actually landed in the balance.
+
+**Nothing in this entry is assumed to be present.** `MissionCompleted` carries
+most of its fields conditionally: a donation mission has no `Reward` at all, a
+courier run has no `MaterialsReward`. Only `MissionID` and `Name` are required,
+and every other field is simply absent from `data` when the game did not send it.
+An absent reward is absent, never zero — "this paid nothing" and "the game did not
+say" are different claims, which is the rule the whole journal is built on.
+
+Unlike the exobiology rules above, **these presence rates are not yet measured**.
+They are stated as unmeasured rather than guessed; `test/corpus.test.ts` is where
+they get established on a machine with real journals. Treating every field as
+optional is the behaviour that is correct either way.
+
+The colonisation pseudo-mission is refused. Construction contributions arrive as
+`MissionCompleted` with the sentinel id 2^64-1 — 113 of them in the corpus — and
+letting it through would put a phantom mission in the history every time a depot
+was fed. It is rejected by testing `Number.isSafeInteger`, not the literal:
+Frontier's `MissionID` is a u64, JavaScript loses precision above 2^53, and *any*
+id that arrives rounded is one that cannot be matched back to its mission.
+
+**These entries do not sync to EDFM yet**, and that is a server limitation rather
+than a choice here. The journal extension allowlists four categories and
+`missions` is the fifth, so it would answer `unsupported_category`. They are
+recorded and shown locally, and `SYNCABLE_SUBTYPES` is the single line that
+changes the day the wiki accepts them. See [JOURNAL-SYNC.md](JOURNAL-SYNC.md).
 
 ### First discovery is not claimed, and the reason is the data
 

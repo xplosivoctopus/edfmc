@@ -6,6 +6,9 @@
  * point is the arithmetic, not the wiring.
  */
 
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+
 import { describe, expect, it } from 'vitest';
 
 import {
@@ -15,6 +18,19 @@ import {
   type OverlayExobiologyRow,
   type OverlayLiveExobiology,
 } from '../src/lib/overlay.js';
+
+const overlaySrc = readFileSync(
+  fileURLToPath(new URL('../src/overlay/Overlay.tsx', import.meta.url)),
+  'utf8',
+);
+const overlayCss = readFileSync(
+  fileURLToPath(new URL('../src/overlay/overlay.css', import.meta.url)),
+  'utf8',
+);
+const companionSrc = readFileSync(
+  fileURLToPath(new URL('../src/lib/companion.ts', import.meta.url)),
+  'utf8',
+);
 
 describe('countdownTo', () => {
   // A real DepartureTime, verbatim from the corpus.
@@ -165,5 +181,48 @@ describe('the roster does not go stale', () => {
       now: Date.parse(done.updatedAt) + 60 * 60 * 1000,
     });
     expect(panel?.kind).toBe('exobiology');
+  });
+});
+
+describe('a mission whose work is done', () => {
+  it('reads Completed instead of a countdown', () => {
+    /*
+     * Once the work is banked the clock is no longer the thing to act on --
+     * going and handing it in is -- and two competing statuses on one line is
+     * how a commander reads neither. So it replaces the expiry rather than
+     * joining it.
+     */
+    expect(overlaySrc).toContain('Completed');
+    expect(overlaySrc).toMatch(/m\.awaitingTurnIn \? \([\s\S]{0,200}Completed[\s\S]{0,200}\) : \(/);
+  });
+
+  it('carries the flag from the mission store rather than re-deriving it', () => {
+    // One definition of "done", in the package that owns mission state.
+    expect(companionSrc).toContain('awaitingTurnIn: isAwaitingTurnIn(m)');
+    expect(overlaySrc).not.toContain('redirected');
+    expect(overlaySrc).not.toContain('totalToDeliver');
+  });
+
+  it('is not coloured the same as an expiry running out', () => {
+    /*
+     * Opposites: amber is a deadline closing in, this is work already banked.
+     * Reading them as one colour at a glance over the game is the single thing
+     * this must not do.
+     */
+    const urgent = /\.urgent\s*\{[^}]*color:\s*([^;]+);/.exec(overlayCss);
+    const done = /\.mission-row-exp\.done\s*\{[^}]*color:\s*([^;]+);/.exec(overlayCss);
+    expect(urgent, 'the urgent colour could not be found').toBeTruthy();
+    expect(done, 'the completed colour could not be found').toBeTruthy();
+    expect(done![1]!.trim()).not.toBe(urgent![1]!.trim());
+  });
+
+  it('is not dimmed, because it is still outstanding', () => {
+    /*
+     * The reward is not paid until it is turned in. Fading the row would read
+     * as "dealt with", which is exactly the mission that then gets forgotten.
+     */
+    const rule = /\.mission-row\.done\s*\{([^}]*)\}/.exec(overlayCss);
+    expect(rule, 'the completed row rule could not be found').toBeTruthy();
+    expect(rule![1]).not.toMatch(/opacity|filter|text-decoration/);
   });
 });

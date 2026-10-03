@@ -475,6 +475,30 @@ body,
 .mission-row-meta { font-size: 0.6875rem; color: #a8a8a8; }
 .mission-row-meta .unknown { font-style: italic; color: #9d9d9d; }
 
+/*
+ * A mission whose objective is done and which only needs handing in.
+ *
+ * Green rather than the amber `.urgent` uses, because these are opposites: amber
+ * is a deadline closing in, this is work already banked. Reading them as the
+ * same colour at a glance over the game is the one thing this must not do.
+ *
+ * The row is not dimmed. It is still outstanding -- the reward is not paid until
+ * it is turned in -- and fading it would read as "dealt with", which is exactly
+ * the mission a commander then forgets to collect on.
+ */
+.mission-row-exp.done {
+  color: #6fcf7f;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+/* A quiet marker down the edge, so the row is findable in a list without
+   relying on colour alone. */
+.mission-row.done {
+  border-left: 2px solid #6fcf7f;
+  padding-left: 0.375rem;
+  margin-left: -0.5rem;
+}
+
 .mission-row-note {
   font-size: 0.6875rem; color: #b0b0b0; line-height: 1.35; margin-top: 0.125rem;
 }

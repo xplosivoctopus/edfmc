@@ -160,6 +160,40 @@ It is deliberately **not** labelled "EDFM note": it is not EDFM's guidance, it i
 own admission of a gap. Keeping the two apart matters: one is about the game, the
 other is about us.
 
+## "Completed" in the overlay means handed in is all that is left
+
+A mission row reads **Completed** once the work is done but the reward is not yet
+collected. Two signals say so, and both are reported by the game rather than
+inferred:
+
+1. **`MissionRedirected` has fired.** The game moves a mission's destination when
+   its objective is met and it wants you to return — a massacre's kills reached,
+   a scan taken. That is the game saying "done, come back".
+2. **Every item has been delivered.** `CargoDepot` reports `ItemsDelivered`
+   against `TotalItemsToDeliver`, so a depot mission is finished when the first
+   reaches the second. Redirection does not fire for these.
+
+**Nothing else is inferred.** A kill mission with no redirection yet is not
+"probably nearly done": counting `Bounty` events against a target would be a
+guess, and the overlay would tell a commander their work was finished when it was
+not. Anything these two cannot establish stays simply active, which is the honest
+answer and the common case.
+
+Two mistakes that are easy to make here, and are tested against:
+
+- **Both delivery figures unknown must not satisfy it.** A naive
+  `delivered >= total` is true when neither is known, which would mark every
+  courier mission done the moment it was accepted.
+- **A handed-in mission must not read Completed.** `MissionCompleted` means the
+  reward was collected: the mission leaves `active()` and disappears from the
+  widget entirely. "Completed" is only ever shown for one that is still
+  outstanding — which is also why the row is not dimmed. The reward is not paid
+  until it is turned in, and fading it would read as "dealt with", which is
+  exactly the mission that then gets forgotten.
+
+The colour is green rather than the amber used for an expiry running out, because
+those are opposites: amber is a deadline closing in, green is work already banked.
+
 ## Reconciliation, and the `ended-unknown` status
 
 `Missions` is emitted at session start and is the authoritative list of what is
